@@ -25,6 +25,19 @@ A native macOS clone of Finder, built with AppKit, that adds two things Finder d
 - Each host keeps one multiplexed connection (`ControlMaster`). Use the eject button in the sidebar to disconnect.
 - Passphrases, passwords and host-key confirmations appear as native dialogs through a small `SSH_ASKPASS` helper.
 
+## Install
+
+Download the latest `Scout-<version>-arm64.dmg` from [Releases](https://github.com/matej-io/scout/releases), open it and drag Scout to Applications. Builds are for Apple silicon, need macOS 15 or later, and are signed with Developer ID and notarized by Apple.
+
+## Releasing
+
+```sh
+scripts/release.sh 1.0.1            # archive (arm64), sign with Developer ID, notarize, build the DMG
+scripts/release.sh 1.0.1 --publish  # …and create the GitHub release with the DMG attached
+```
+
+Signing and notarization use the Xcode account for the ZEN PLUS LTD team (automatic signing with `-allowProvisioningUpdates`). On CI, set `ASC_KEY_PATH`, `ASC_KEY_ID` and `ASC_ISSUER_ID` to use an App Store Connect API key instead. The output goes to `build/release/`.
+
 ## Building
 
 Open `Scout.xcodeproj` in Xcode 26 or later and run, or build from the command line:

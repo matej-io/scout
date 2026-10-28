@@ -104,7 +104,7 @@ fi
 APP_PATH=$EXPORT/$APP.app
 step "Verifying signature"
 codesign --verify --deep --strict --verbose=2 $APP_PATH
-codesign -dv $APP_PATH 2>&1 | grep -E "Authority=Developer ID|TeamIdentifier|Runtime" || true
+codesign -dvv $APP_PATH 2>&1 | grep -E "Authority=Developer ID|TeamIdentifier" || true
 lipo -archs $APP_PATH/Contents/MacOS/$APP
 if (( NOTARIZE )); then
   xcrun stapler validate $APP_PATH
