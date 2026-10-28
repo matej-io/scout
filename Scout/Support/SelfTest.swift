@@ -3,6 +3,28 @@ import AppKit
 /// Exercises file operations end to end (local and over SSH) when launched with
 /// SCOUT_SELFTEST=<ssh host>. Everything happens in temporary folders that are removed afterwards.
 enum SelfTest {
+    /// SCOUT_SPRINGTEST=1: checks spring-loading timing (quick passes don't open, holding does).
+    static func runSpring() {
+        var opened: [String] = []
+        var blinks = 0
+        let loader = SpringLoader(blink: { _, _ in blinks += 1 }, open: { key in opened.append(key.base as! String) })
+        let start = Date()
+        func at(_ t: TimeInterval, _ block: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block) }
+        loader.hover("A")                       // pass over A quickly…
+        at(0.2) { loader.hover("B") }          // …then B
+        at(0.3) { loader.hover("B") }          // repeated updates over B don't restart the timer
+        at(0.45) { loader.hover("B") }
+        at(1.2) {
+            NSLog("SPRINGTEST opened=%@ blinks=%d (expect [B], 4) delay=%.2f", opened.description, blinks, SpringLoader.delay)
+            loader.hover("C")
+            at(0.3) { loader.hover(nil) }      // leave C before the delay
+            at(1.0) {
+                NSLog("SPRINGTEST after leaving C opened=%@ (expect [B]) elapsed=%.1f", opened.description, Date().timeIntervalSince(start))
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
     static func run(host: String) {
         let queue = DispatchQueue(label: "selftest")
         queue.async {

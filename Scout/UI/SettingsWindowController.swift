@@ -99,12 +99,23 @@ enum Snapshot {
         if let mode = env["SCOUT_VIEW"].flatMap(Int.init).flatMap(ViewMode.init(rawValue:)) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { controller.activePane.setViewMode(mode) }
         }
+        if let text = env["SCOUT_GOTO"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                controller.goToFolder(nil)
+                if !text.isEmpty { GoToFolderController.debugType(text) }
+            }
+        }
         if env["SCOUT_SPLIT"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { controller.toggleSplit(nil) }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             render(controller.window!, to: path)
-            if env["SCOUT_SNAPSHOT_QUIT"] == "1" { NSApp.terminate(nil) }
+            if let sheet = controller.window?.attachedSheet, let view = sheet.contentView,
+               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-sheet.png")))
+            }
+            if env["SCOUT_SNAPSHOT_QUIT"] == "1" { exit(0) }
         }
     }
 

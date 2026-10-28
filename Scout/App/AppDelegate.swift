@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         Snapshot.applyAppearance()
         newWindow(nil)
         NSApp.activate()
+        if ProcessInfo.processInfo.environment["SCOUT_SPRINGTEST"] != nil { SelfTest.runSpring() }
         if let host = ProcessInfo.processInfo.environment["SCOUT_SELFTEST"] {
             SelfTest.run(host: host)
         }

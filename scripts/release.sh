@@ -9,6 +9,8 @@
 #   --publish      Create a GitHub release "v<version>" with the DMG attached (uses gh)
 #   --no-notarize  Skip notarization (the app will only run on this Mac without Gatekeeper warnings)
 #
+# Optional: RELEASE_NOTES="..." adds a "What's new" section to the GitHub release.
+#
 # Signing uses the Xcode account for team $TEAM_ID with automatic signing
 # (-allowProvisioningUpdates), so no certificates or passwords are needed in this script.
 # Alternatively set ASC_KEY_PATH, ASC_KEY_ID and ASC_ISSUER_ID to use an App Store Connect API key (CI).
@@ -141,6 +143,14 @@ if (( PUBLISH )); then
   {
     echo "Scout $VERSION for Apple silicon Macs (macOS 15 or later)."
     echo
+    if [[ -n "${RELEASE_NOTES:-}" ]]; then
+      echo "## What's new"
+      echo
+      echo "$RELEASE_NOTES"
+      echo
+      echo "## Install"
+      echo
+    fi
     echo "Download **$(basename $DMG)**, open it and drag Scout to Applications."
     (( NOTARIZE )) && echo "The app is signed with Developer ID and notarized by Apple."
     echo

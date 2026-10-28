@@ -246,6 +246,37 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         return false
     }
 
+    // MARK: Spring-loading
+
+    private var springOrigin: (location: Location, back: [Location], forward: [Location], started: Date)?
+    private var springWatch: Timer?
+
+    /// Opens a folder while something is being dragged. If the drag ends without a drop,
+    /// the pane springs back to where it was, like Finder.
+    func springOpen(_ target: Location) {
+        guard target != location else { return }
+        if springOrigin == nil {
+            springOrigin = (location, backStack, forwardStack, Date())
+            let watch = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in self?.checkSpringEnded() }
+            RunLoop.main.add(watch, forMode: .common)
+            springWatch = watch
+        }
+        navigate(to: target)
+    }
+
+    private func checkSpringEnded() {
+        guard NSEvent.pressedMouseButtons & 1 == 0, let origin = springOrigin else { return }
+        springWatch?.invalidate()
+        springWatch = nil
+        springOrigin = nil
+        let dropped = DragSupport.lastDrop > origin.started
+        guard !dropped else { return }
+        navigate(to: origin.location, recordHistory: false)
+        backStack = origin.back
+        forwardStack = origin.forward
+        delegate?.paneDidChangeLocation(self)
+    }
+
     func goBack() {
         guard let previous = backStack.popLast() else { return }
         let current = location

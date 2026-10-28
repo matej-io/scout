@@ -2,6 +2,17 @@ import AppKit
 
 final class FileOutlineView: NSOutlineView {
     weak var pane: PaneViewController?
+    var onDragExit: (() -> Void)?
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        super.draggingExited(sender)
+        onDragExit?()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        super.draggingEnded(sender)
+        onDragExit?()
+    }
 
     override func keyDown(with event: NSEvent) {
         if BrowserKeys.handle(event, pane: pane) { return }
@@ -33,6 +44,16 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
     private var expandedRefs = Set<ItemRef>()
     private var editingItem: FileItem?
     private var suppressSelectionNotifications = false
+    /// True while a drag is over the list; folders then spring open after a delay instead of expanding.
+    private var isDragging = false
+    private lazy var springLoader = SpringLoader(blink: { [weak self] key, on in
+        guard let self, let ref = key.base as? ItemRef, let item = self.findItem(ref) else { return }
+        let row = self.outline.row(forItem: item)
+        if row >= 0 { self.outline.rowView(atRow: row, makeIfNecessary: false)?.isTargetForDropOperation = on }
+    }, open: { [weak self] key in
+        guard let ref = key.base as? ItemRef else { return }
+        self?.pane?.springOpen(.folder(ref))
+    })
 
     private struct Column {
         let id: String
@@ -101,6 +122,10 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         outline.registerForDraggedTypes(DragSupport.types)
         outline.setDraggingSourceOperationMask([.copy, .move, .link, .generic, .delete], forLocal: false)
         outline.draggingDestinationFeedbackStyle = .regular
+        outline.onDragExit = { [weak self] in
+            self?.isDragging = false
+            self?.springLoader.cancel()
+        }
 
         let headerMenu = NSMenu()
         headerMenu.delegate = self
@@ -225,6 +250,8 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
 
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
         guard let item = item as? FileItem else { return false }
+        // NSOutlineView expands folders as soon as a drag hovers them; Finder springs them open after a delay instead.
+        if isDragging { return false }
         if item.children == nil {
             expand(item)
             return false
@@ -371,16 +398,21 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
     }
 
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
+        isDragging = true
         if let folder = item as? FileItem, folder.isBrowsable {
             outlineView.setDropItem(folder, dropChildIndex: NSOutlineViewDropOnItemIndex)
+            springLoader.hover(folder.ref)
             return DragSupport.operation(for: info, destination: folder.ref)
         }
+        springLoader.hover(nil)
         guard let destination = pane?.location.ref else { return [] }
         outlineView.setDropItem(nil, dropChildIndex: NSOutlineViewDropOnItemIndex)
         return DragSupport.operation(for: info, destination: destination)
     }
 
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+        isDragging = false
+        springLoader.cancel()
         let destination = (item as? FileItem)?.ref ?? pane?.location.ref
         guard let destination else { return false }
         return DragSupport.accept(info, destination: destination, window: view.window)

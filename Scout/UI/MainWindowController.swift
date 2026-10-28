@@ -442,65 +442,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     }
 
     @objc func goToFolder(_ sender: Any?) {
-        guard let window else { return }
-        let alert = NSAlert()
-        alert.messageText = "Go to Folder"
-        let remote = activePane.location.ref?.remoteHost
-        alert.informativeText = remote.map { "Enter a path on “\(SSHManager.shared.host($0).displayName)”, or host:/path for another server." }
-            ?? "Enter a path, or host:/path to open a folder over SSH."
-        alert.addButton(withTitle: "Go")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(string: UserDefaults.standard.string(forKey: "lastGoToFolder") ?? "")
-        field.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
-        field.placeholderString = remote == nil ? "~/Documents" : "/var/www"
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            let input = field.stringValue.trimmingCharacters(in: .whitespaces)
-            guard !input.isEmpty else { return }
-            UserDefaults.standard.set(input, forKey: "lastGoToFolder")
-            self.goTo(input, remoteHost: remote)
-        }
-    }
-
-    private func goTo(_ input: String, remoteHost: String?) {
-        // host:/path → SSH
-        if let colon = input.firstIndex(of: ":"), !input.hasPrefix("/"), !input.hasPrefix("~"), !input.contains("://") {
-            let host = String(input[..<colon])
-            var path = String(input[input.index(after: colon)...])
-            if path.isEmpty { path = "" }
-            let ssh = SSHManager.shared.host(host)
-            ssh.connect { [weak self] result in
-                guard case .success = result else {
-                    if case .failure(let e) = result { self?.activePane.showError(e) }
-                    return
-                }
-                let resolved = path.isEmpty || path == "~" ? ssh.home : (path.hasPrefix("~/") ? ssh.home + path.dropFirst(1) : path)
-                self?.activePane.navigate(to: .folder(.remote(host: host, path: resolved)))
-            }
-            return
-        }
-        if let remoteHost {
-            let ssh = SSHManager.shared.host(remoteHost)
-            var path = input
-            if path == "~" { path = ssh.home } else if path.hasPrefix("~/") { path = ssh.home + path.dropFirst(1) }
-            else if !path.hasPrefix("/"), let base = activePane.location.ref?.path { path = (base as NSString).appendingPathComponent(path) }
-            activePane.navigate(to: .folder(.remote(host: remoteHost, path: path)))
-            return
-        }
-        let expanded = (input as NSString).expandingTildeInPath
-        var url = URL(fileURLWithPath: expanded)
-        var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) {
-            if isDir.boolValue {
-                activePane.navigate(to: .folder(.local(url)))
-            } else {
-                activePane.navigate(to: .folder(.local(url.deletingLastPathComponent())), select: [.local(url)])
-            }
-        } else {
-            url = url.deletingLastPathComponent()
-            NSSound.beep()
+        guard let window, window.attachedSheet == nil else { return }
+        let pane = activePane!
+        GoToFolderController.present(on: window, pane: pane) { location, select in
+            pane.navigate(to: location, select: select.map { [$0] } ?? [])
+            pane.focus()
         }
     }
 

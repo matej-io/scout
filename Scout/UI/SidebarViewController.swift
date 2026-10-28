@@ -52,6 +52,20 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private let outlineView = SidebarOutlineView()
     private var sections: [SidebarItem] = []
     private var suppressSelection = false
+    private lazy var springLoader = SpringLoader(blink: { [weak self] key, on in
+        guard let self, let id = key.base as? String else { return }
+        for section in self.sections {
+            for item in section.children where item.identifier == id {
+                let row = self.outlineView.row(forItem: item)
+                if row >= 0 { self.outlineView.rowView(atRow: row, makeIfNecessary: false)?.isTargetForDropOperation = on }
+            }
+        }
+    }, open: { [weak self] key in
+        guard let self, let id = key.base as? String,
+              let item = self.sections.flatMap(\.children).first(where: { $0.identifier == id }),
+              let location = item.location else { return }
+        (self.view.window?.windowController as? MainWindowController)?.activePane.springOpen(location)
+    })
     private static let dragType = NSPasteboard.PasteboardType("io.matej.scout.sidebar-row")
 
     override func loadView() {
@@ -79,6 +93,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.menu = menu
         outlineView.target = self
         outlineView.action = #selector(clicked(_:))
+        outlineView.onDragExit = { [weak self] in self?.springLoader.cancel() }
 
         scroll.documentView = outlineView
         view = scroll
@@ -304,12 +319,14 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
         let favorites = sections.first
-        // Dropping onto a folder row copies/moves files into it.
+        // Dropping onto a folder row copies/moves files into it; hovering springs it open in the window.
         if let target = item as? SidebarItem, target.kind != .section, index == NSOutlineViewDropOnItemIndex {
-            guard info.draggingPasteboard.types?.contains(SidebarViewController.dragType) != true,
-                  let ref = target.location?.ref, !ref.path.isEmpty else { return [] }
+            let isSidebarReorder = info.draggingPasteboard.types?.contains(SidebarViewController.dragType) == true
+            springLoader.hover(isSidebarReorder || target.location == nil ? nil : target.identifier)
+            guard !isSidebarReorder, let ref = target.location?.ref, !ref.path.isEmpty else { return [] }
             return DragSupport.operation(for: info, destination: ref)
         }
+        springLoader.hover(nil)
         // Dropping between favourites adds a folder there.
         if let target = item as? SidebarItem, target === favorites, index != NSOutlineViewDropOnItemIndex {
             if info.draggingPasteboard.types?.contains(SidebarViewController.dragType) == true { return .move }
@@ -320,6 +337,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+        springLoader.cancel()
+        DragSupport.noteDrop()
         if let target = item as? SidebarItem, target.kind != .section, index == NSOutlineViewDropOnItemIndex,
            let ref = target.location?.ref {
             return DragSupport.accept(info, destination: ref, window: view.window)
@@ -446,9 +465,16 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 let SSHHostDisconnected = Notification.Name("ScoutSSHHostDisconnected")
 
 final class SidebarOutlineView: NSOutlineView {
-    override func frameOfOutlineCell(atRow row: Int) -> NSRect {
-        // Group rows show their disclosure on the right on hover, like Finder; regular rows have none.
-        super.frameOfOutlineCell(atRow: row)
+    var onDragExit: (() -> Void)?
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        super.draggingExited(sender)
+        onDragExit?()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        super.draggingEnded(sender)
+        onDragExit?()
     }
 }
 

@@ -203,13 +203,13 @@ enum Fmt {
         return Fmt.date.string(from: date)
     }
 
-    /// Finder shows free space with two decimals: “509.48 GB available”.
+    /// Finder shows free space with up to two decimals: “509.48 GB”, “507.7 GB”.
     static func available(_ bytes: Int64) -> String {
         let value = Double(bytes)
         let (amount, unit): (Double, String) = value >= 1e12 ? (value / 1e12, "TB") : (value >= 1e9 ? (value / 1e9, "GB") : (value / 1e6, "MB"))
         let f = NumberFormatter()
         f.numberStyle = .decimal
-        f.minimumFractionDigits = 2
+        f.minimumFractionDigits = 0
         f.maximumFractionDigits = 2
         return "\(f.string(from: NSNumber(value: amount)) ?? String(format: "%.2f", amount)) \(unit)"
     }

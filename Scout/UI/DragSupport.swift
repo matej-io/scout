@@ -112,6 +112,7 @@ enum DragSupport {
     static func accept(_ info: NSDraggingInfo, destination: ItemRef, window: NSWindow?) -> Bool {
         let refs = refs(from: info.draggingPasteboard)
         guard !refs.isEmpty else { return false }
+        noteDrop()
         if case .local(let url) = destination, url == Location.trashURL {
             let urls = refs.compactMap(\.localURL)
             if !urls.isEmpty { FileOps.trash(urls) { _, _ in } }
@@ -203,4 +204,71 @@ final class Thumbnails {
             DispatchQueue.main.async { completion(image) }
         }
     }
+}
+
+// MARK: - Spring-loaded folders
+
+/// Finder-style spring-loading: hold a dragged item over a folder for the system
+/// spring-loading delay (System Settings › Accessibility) and the folder blinks and opens.
+/// Moving on before the delay does nothing.
+final class SpringLoader {
+    static var isEnabled: Bool { UserDefaults.standard.object(forKey: "com.apple.springing.enabled") as? Bool ?? true }
+    static var delay: TimeInterval {
+        let value = UserDefaults.standard.double(forKey: "com.apple.springing.delay")
+        return value > 0 ? value : 0.5
+    }
+
+    private var target: AnyHashable?
+    private var timer: Timer?
+    private let blink: (AnyHashable, Bool) -> Void
+    private let open: (AnyHashable) -> Void
+
+    /// `blink` turns the target's highlight on/off; `open` springs it open.
+    init(blink: @escaping (AnyHashable, Bool) -> Void, open: @escaping (AnyHashable) -> Void) {
+        self.blink = blink
+        self.open = open
+    }
+
+    /// Call on every drag update with the folder under the pointer (nil when not over a folder).
+    func hover(_ key: AnyHashable?) {
+        guard key != target else { return }
+        cancel()
+        target = key
+        guard let key, SpringLoader.isEnabled else { return }
+        schedule(after: SpringLoader.delay) { [weak self] in self?.fire(key) }
+    }
+
+    func cancel() {
+        timer?.invalidate()
+        timer = nil
+        target = nil
+    }
+
+    private func schedule(after interval: TimeInterval, _ block: @escaping () -> Void) {
+        let t = Timer(timeInterval: interval, repeats: false) { _ in block() }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    private func fire(_ key: AnyHashable) {
+        // Two quick blinks, then open — like Finder.
+        let steps: [Bool] = [false, true, false, true]
+        func step(_ i: Int) {
+            guard target == key else { return }
+            if i == steps.count {
+                target = nil
+                open(key)
+                return
+            }
+            blink(key, steps[i])
+            schedule(after: 0.07) { step(i + 1) }
+        }
+        step(0)
+    }
+}
+
+extension DragSupport {
+    /// Time of the last accepted drop, used to decide whether a spring-loaded window stays open.
+    static var lastDrop = Date.distantPast
+    static func noteDrop() { lastDrop = Date() }
 }

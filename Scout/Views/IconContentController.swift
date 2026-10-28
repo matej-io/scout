@@ -8,6 +8,13 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
     private let scroll = NSScrollView()
     private var items: [FileItem] = []
     private var editing: (item: FileItem, field: NSTextField)?
+    private lazy var springLoader = SpringLoader(blink: { [weak self] key, on in
+        guard let self, let ref = key.base as? ItemRef, let index = self.items.firstIndex(where: { $0.ref == ref }) else { return }
+        (self.collection.item(at: IndexPath(item: index, section: 0)) as? IconItem)?.highlightState = on ? .asDropTarget : .none
+    }, open: { [weak self] key in
+        guard let ref = key.base as? ItemRef else { return }
+        self?.pane?.springOpen(.folder(ref))
+    })
 
     override func loadView() {
         layout.minimumInteritemSpacing = 0
@@ -28,6 +35,7 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
         collection.onDoubleClick = { [weak self] in self?.pane?.open(self?.selectedItems ?? []) }
         collection.onFocusChange = { [weak self] in self?.refreshVisible() }
         collection.typeSelect = { [weak self] prefix in self?.typeSelect(prefix) }
+        collection.onDragExit = { [weak self] in self?.springLoader.cancel() }
 
         scroll.documentView = collection
         scroll.hasVerticalScroller = true
@@ -112,8 +120,10 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
                         dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
         let index = proposedDropIndexPath.pointee.item
         if proposedDropOperation.pointee == .on, index < items.count, items[index].isBrowsable {
+            springLoader.hover(items[index].ref)
             return DragSupport.operation(for: draggingInfo, destination: items[index].ref)
         }
+        springLoader.hover(nil)
         guard let destination = pane?.location.ref else { return [] }
         proposedDropOperation.pointee = .before
         return DragSupport.operation(for: draggingInfo, destination: destination)
@@ -121,6 +131,7 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
 
     func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: NSDraggingInfo, indexPath: IndexPath,
                         dropOperation: NSCollectionView.DropOperation) -> Bool {
+        springLoader.cancel()
         var destination = pane?.location.ref
         if dropOperation == .on, indexPath.item < items.count, items[indexPath.item].isBrowsable {
             destination = items[indexPath.item].ref
@@ -220,6 +231,17 @@ final class FileCollectionView: NSCollectionView {
     var onDoubleClick: (() -> Void)?
     var onFocusChange: (() -> Void)?
     var typeSelect: ((String) -> Void)?
+    var onDragExit: (() -> Void)?
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        super.draggingExited(sender)
+        onDragExit?()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        super.draggingEnded(sender)
+        onDragExit?()
+    }
     private var typeBuffer = ""
     private var lastType = Date.distantPast
 

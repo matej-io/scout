@@ -2,6 +2,12 @@ import AppKit
 
 final class FileBrowser: NSBrowser {
     weak var pane: PaneViewController?
+    var onDragExit: (() -> Void)?
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        super.draggingExited(sender)
+        onDragExit?()
+    }
     var onMenu: ((Int, Int) -> NSMenu?)?
 
     override func keyDown(with event: NSEvent) {
@@ -26,6 +32,14 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
                                 size: nil, modified: nil, kind: "")
     private var loading = Set<ObjectIdentifier>()
 
+    private struct Cell: Hashable { let row: Int; let column: Int }
+    /// In column view a spring-loaded folder is selected, which opens its contents in the next column.
+    private lazy var springLoader = SpringLoader(blink: { _, _ in }, open: { [weak self] key in
+        guard let self, let cell = key.base as? Cell else { return }
+        self.browser.selectRowIndexes([cell.row], inColumn: cell.column)
+        self.pane?.selectionDidChange()
+    })
+
     override func loadView() {
         browser.delegate = self
         browser.isTitled = false
@@ -49,6 +63,7 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
         browser.setDraggingSourceOperationMask([.copy, .move, .link, .generic, .delete], forLocal: false)
         browser.registerForDraggedTypes(DragSupport.types)
         browser.onMenu = { [weak self] row, column in self?.menu(row: row, column: column) }
+        browser.onDragExit = { [weak self] in self?.springLoader.cancel() }
         view = browser
     }
 
@@ -225,14 +240,17 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
     func browser(_ browser: NSBrowser, validateDrop info: NSDraggingInfo, proposedRow row: UnsafeMutablePointer<Int>,
                  column: UnsafeMutablePointer<Int>, dropOperation: UnsafeMutablePointer<NSBrowser.DropOperation>) -> NSDragOperation {
         if dropOperation.pointee == .on, let item = browser.item(atRow: row.pointee, inColumn: column.pointee) as? FileItem, item.isBrowsable {
+            springLoader.hover(Cell(row: row.pointee, column: column.pointee))
             return DragSupport.operation(for: info, destination: item.ref)
         }
+        springLoader.hover(nil)
         dropOperation.pointee = .above
         guard let destination = folder(forColumn: column.pointee) else { return [] }
         return DragSupport.operation(for: info, destination: destination)
     }
 
     func browser(_ browser: NSBrowser, acceptDrop info: NSDraggingInfo, atRow row: Int, column: Int, dropOperation: NSBrowser.DropOperation) -> Bool {
+        springLoader.cancel()
         var destination = folder(forColumn: column)
         if dropOperation == .on, let item = browser.item(atRow: row, inColumn: column) as? FileItem, item.isBrowsable {
             destination = item.ref

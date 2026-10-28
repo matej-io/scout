@@ -8,6 +8,10 @@ final class GalleryContentController: NSViewController, BrowserContent, NSCollec
     private let stripScroll = NSScrollView()
     private let inspector = GalleryInspector()
     private var items: [FileItem] = []
+    private lazy var springLoader = SpringLoader(blink: { _, _ in }, open: { [weak self] key in
+        guard let ref = key.base as? ItemRef else { return }
+        self?.pane?.springOpen(.folder(ref))
+    })
 
     override func loadView() {
         let root = NSView()
@@ -30,6 +34,7 @@ final class GalleryContentController: NSViewController, BrowserContent, NSCollec
         strip.onFocusChange = { [weak self] in
             for case let item as GalleryThumbItem in self?.strip.visibleItems() ?? [] { item.updateAppearance() }
         }
+        strip.onDragExit = { [weak self] in self?.springLoader.cancel() }
         strip.registerForDraggedTypes(DragSupport.types)
         strip.setDraggingSourceOperationMask([.copy, .move, .link, .generic, .delete], forLocal: false)
         stripScroll.documentView = strip
@@ -138,13 +143,22 @@ final class GalleryContentController: NSViewController, BrowserContent, NSCollec
     func collectionView(_ collectionView: NSCollectionView, validateDrop draggingInfo: NSDraggingInfo,
                         proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
                         dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
+        let index = proposedDropIndexPath.pointee.item
+        if proposedDropOperation.pointee == .on, index < items.count, items[index].isBrowsable {
+            springLoader.hover(items[index].ref)
+            return DragSupport.operation(for: draggingInfo, destination: items[index].ref)
+        }
+        springLoader.hover(nil)
         guard let destination = pane?.location.ref else { return [] }
         return DragSupport.operation(for: draggingInfo, destination: destination)
     }
 
     func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: NSDraggingInfo, indexPath: IndexPath,
                         dropOperation: NSCollectionView.DropOperation) -> Bool {
-        guard let destination = pane?.location.ref else { return false }
+        springLoader.cancel()
+        var destination = pane?.location.ref
+        if dropOperation == .on, indexPath.item < items.count, items[indexPath.item].isBrowsable { destination = items[indexPath.item].ref }
+        guard let destination else { return false }
         return DragSupport.accept(draggingInfo, destination: destination, window: view.window)
     }
 }
