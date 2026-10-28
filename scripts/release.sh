@@ -18,6 +18,50 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+usage() {
+  cat <<'EOF'
+Usage: scripts/release.sh [version] [--publish] [--no-notarize]
+
+Builds Scout for Apple silicon, signs it with Developer ID, notarizes it and
+packages it as build/release/Scout-<version>-arm64.dmg.
+
+Arguments:
+  version        The version to release, e.g. 1.2.0. If omitted, the script uses
+                 MARKETING_VERSION from the Xcode project.
+  --publish      Also create the GitHub release v<version> with the DMG attached.
+                 The current commit is pushed first and the tag is created on it.
+  --no-notarize  Skip notarization (Gatekeeper will warn on other Macs).
+  -h, --help     Show this help.
+
+The version sets:
+  - the app's version (shown in Get Info and About)
+  - the DMG name: Scout-<version>-arm64.dmg
+  - the GitHub release: tag v<version>, titled "Scout <version>"
+The build number is set automatically to the number of commits
+(git rev-list --count HEAD), so each release gets a higher one.
+
+Good to know:
+  - The version argument doesn't change the project file. Releasing 1.2.0 still
+    leaves MARKETING_VERSION at its old value, so a later run without a version
+    (or a build from Xcode) uses the old number. Either always pass the version
+    or bump MARKETING_VERSION before releasing.
+  - If release v<version> already exists, --publish replaces its DMG instead of
+    failing. That's handy for fixing a broken build, but easy to do by accident.
+
+Environment:
+  RELEASE_NOTES="..."   Adds a "What's new" section to the GitHub release.
+  TEAM_ID               Developer team (default 6H56BMGV4C, ZEN PLUS LTD).
+  ASC_KEY_PATH, ASC_KEY_ID, ASC_ISSUER_ID
+                        Use an App Store Connect API key instead of the Xcode account (CI).
+  NOTARY_PROFILE        notarytool keychain profile; also notarizes the DMG itself
+                        when a local Developer ID certificate is available.
+
+Examples:
+  scripts/release.sh 1.2.0
+  RELEASE_NOTES="- Faster SSH listings" scripts/release.sh 1.2.0 --publish
+EOF
+}
+
 TEAM_ID=${TEAM_ID:-6H56BMGV4C}
 APP=Scout
 PUBLISH=0
@@ -25,9 +69,10 @@ NOTARIZE=1
 VERSION=""
 for arg in "$@"; do
   case "$arg" in
+    -h|--help) usage; exit 0 ;;
     --publish) PUBLISH=1 ;;
     --no-notarize) NOTARIZE=0 ;;
-    -*) echo "Unknown option $arg" >&2; exit 1 ;;
+    -*) echo "Unknown option $arg (see --help)" >&2; exit 1 ;;
     *) VERSION=$arg ;;
   esac
 done
