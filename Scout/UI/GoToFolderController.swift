@@ -39,15 +39,27 @@ final class GoToFolderController: NSWindowController, NSWindowDelegate, NSTextFi
     private var lastEditPasted = false
     private var cycling = false             // Tab is stepping through the matches
 
-    private static let width: CGFloat = 520
+    private static let width: CGFloat = 624
     private static let rowHeight: CGFloat = 26
     private static let maxRows = 9
 
+    static var isShowing: Bool { current != nil }
+
+    /// Shows the panel over `window`. It isn’t a sheet, so it stays where it is while the list
+    /// of matches grows and shrinks: the field sits 20% above the middle of the window’s content.
     static func present(on window: NSWindow, pane: PaneViewController, completion: @escaping (Location, ItemRef?) -> Void) {
+        if let current {
+            current.window?.makeKeyAndOrderFront(nil)
+            return
+        }
         let controller = GoToFolderController(pane: pane, completion: completion)
         current = controller
-        window.beginSheet(controller.window!) { _ in current = nil }
-        controller.window?.makeFirstResponder(controller.field)
+        controller.parentWindow = window
+        let panel = controller.window!
+        controller.resizeToFit()
+        window.addChildWindow(panel, ordered: .above)
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(controller.field)
         controller.setText(controller.initialText)
         controller.field.currentEditor()?.selectAll(nil)
         controller.refresh()
@@ -60,6 +72,11 @@ final class GoToFolderController: NSWindowController, NSWindowDelegate, NSTextFi
                             styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        panel.isMovable = false
+        panel.hidesOnDeactivate = false
+        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(button)?.isHidden = true
+        }
         super.init(window: panel)
         panel.delegate = self
         build()
@@ -135,18 +152,34 @@ final class GoToFolderController: NSWindowController, NSWindowDelegate, NSTextFi
     }
 
     private var separatorView: NSView?
+    private weak var parentWindow: NSWindow?
 
+    /// Sizes the panel to its matches, keeping the field at a fixed spot over the parent window:
+    /// centred horizontally, and 20% of the content height above the middle. Only the bottom moves.
     private func resizeToFit() {
         let rows = min(suggestions.count, GoToFolderController.maxRows)
         tableHeight.constant = CGFloat(rows) * GoToFolderController.rowHeight + (rows > 0 ? 4 : 0)
         separatorView?.isHidden = rows == 0
-        guard let window else { return }
-        window.contentView?.layoutSubtreeIfNeeded()
-        let size = window.contentView?.fittingSize ?? window.frame.size
-        var frame = window.frame
-        frame.origin.y += frame.height - size.height
-        frame.size = NSSize(width: GoToFolderController.width, height: size.height)
+        guard let window, let content = window.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        let size = NSSize(width: GoToFolderController.width, height: content.fittingSize.height)
+        var frame = NSRect(origin: window.frame.origin, size: size)
+        if let parent = parentWindow {
+            let area = parent.convertToScreen(parent.contentLayoutRect)
+            let fieldCenterY = area.midY + area.height * 0.2
+            let fieldOffsetFromTop = size.height - field.frame.midY   // content view isn’t flipped
+            frame.origin.x = (area.midX - size.width / 2).rounded()
+            frame.origin.y = (fieldCenterY + fieldOffsetFromTop - size.height).rounded()
+        }
         window.setFrame(frame, display: true, animate: false)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // Clicking elsewhere in Scout dismisses it, like Spotlight; switching apps doesn’t.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, NSApp.isActive, NSApp.keyWindow !== self.window else { return }
+            self.close()
+        }
     }
 
     func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
@@ -651,9 +684,12 @@ final class GoToFolderController: NSWindowController, NSWindowDelegate, NSTextFi
     }
 
     override func close() {
-        guard let window, let parent = window.sheetParent else { super.close(); return }
-        parent.endSheet(window)
+        guard let window, GoToFolderController.current === self else { return }
+        GoToFolderController.current = nil
+        let parent = window.parent
+        parent?.removeChildWindow(window)
         window.orderOut(nil)
+        if window.isKeyWindow || NSApp.keyWindow == nil { parent?.makeKeyAndOrderFront(nil) }
     }
 
     private func shake() {

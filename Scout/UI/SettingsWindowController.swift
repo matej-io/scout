@@ -67,6 +67,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         sshInfo.textColor = .secondaryLabelColor
         sshInfo.preferredMaxLayoutWidth = 380
 
+        let searchLabel = NSTextField(labelWithString: "When performing a search:")
+        let searchPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let scopeCodes = ["SCev", "SCcf", "SCsp"]
+        searchPopup.addItems(withTitles: ["Search This Mac", "Search the Current Folder", "Use the Previous Search Scope"])
+        searchPopup.selectItem(at: scopeCodes.firstIndex(of: prefs.searchScopeDefault) ?? 0)
+        searchPopup.target = self
+        searchPopup.action = #selector(searchScopeChanged(_:))
+        let searchRow = NSStackView(views: [searchLabel, searchPopup])
+        searchRow.spacing = 8
+
         let stack = NSStackView(views: [
             general,
             checkbox("Show hidden files", prefs.showHidden, #selector(toggleHidden(_:))),
@@ -74,6 +84,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             checkbox("Show path bar", prefs.showPathBar, #selector(togglePath(_:))),
             checkbox("Show status bar", prefs.showStatusBar, #selector(toggleStatus(_:))),
             checkbox("Show Tags in sidebar", prefs.showTags, #selector(toggleTags(_:))),
+            searchRow,
             privacy,
             accessStatus,
             accessButton,
@@ -83,7 +94,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
-        stack.setCustomSpacing(18, after: stack.arrangedSubviews[5])
+        stack.setCustomSpacing(14, after: stack.arrangedSubviews[5])
+        stack.setCustomSpacing(18, after: searchRow)
         stack.setCustomSpacing(18, after: accessButton)
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         window?.contentView = stack
@@ -94,6 +106,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func togglePath(_ sender: NSButton) { Prefs.shared.showPathBar = sender.state == .on }
     @objc private func toggleStatus(_ sender: NSButton) { Prefs.shared.showStatusBar = sender.state == .on }
     @objc private func toggleTags(_ sender: NSButton) { Prefs.shared.showTags = sender.state == .on }
+    @objc private func searchScopeChanged(_ sender: NSPopUpButton) {
+        Prefs.shared.searchScopeDefault = ["SCev", "SCcf", "SCsp"][sender.indexOfSelectedItem]
+    }
 }
 
 /// Debug helper for screenshots without screen-recording permission:
@@ -132,6 +147,12 @@ enum Snapshot {
         if let mode = env["SCOUT_VIEW"].flatMap(Int.init).flatMap(ViewMode.init(rawValue:)) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { controller.activePane.setViewMode(mode) }
         }
+        if let query = env["SCOUT_SEARCH"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                controller.activePane.search(query)
+                if let scope = env["SCOUT_SEARCH_SCOPE"].flatMap(SearchScope.init(rawValue:)) { controller.activePane.setSearchScope(scope) }
+            }
+        }
         if let text = env["SCOUT_GOTO"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 controller.goToFolder(nil)
@@ -143,7 +164,7 @@ enum Snapshot {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             render(controller.window!, to: path)
-            if let sheet = controller.window?.attachedSheet, let view = sheet.contentView,
+            if let sheet = controller.window?.attachedSheet ?? controller.window?.childWindows?.first, let view = sheet.contentView,
                let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                 view.cacheDisplay(in: view.bounds, to: rep)
                 try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-sheet.png")))
@@ -189,6 +210,20 @@ enum Snapshot {
                 color.setFill()
                 NSBezierPath(ovalIn: NSRect(x: f.minX, y: frameView.isFlipped ? bounds.height - f.maxY : f.minY, width: f.width, height: f.height).insetBy(dx: 1, dy: 1)).fill()
             }
+        }
+        // Child windows (Go to Folder) drawn where they sit over the window.
+        for child in window.childWindows ?? [] {
+            guard let view = child.contentView?.superview ?? child.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let image = NSImage(size: view.bounds.size)
+            image.addRepresentation(rep)
+            let origin = NSPoint(x: child.frame.minX - window.frame.minX, y: child.frame.minY - window.frame.minY)
+            NSColor.windowBackgroundColor.setFill()
+            NSBezierPath(roundedRect: NSRect(origin: origin, size: child.frame.size), xRadius: 16, yRadius: 16).fill()
+            image.draw(in: NSRect(origin: origin, size: child.frame.size))
+            NSColor.separatorColor.setStroke()
+            NSBezierPath(roundedRect: NSRect(origin: origin, size: child.frame.size).insetBy(dx: 0.5, dy: 0.5), xRadius: 16, yRadius: 16).stroke()
         }
         composite.unlockFocus()
         guard let tiff = composite.tiffRepresentation, let out = NSBitmapImageRep(data: tiff) else { return }

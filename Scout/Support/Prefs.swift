@@ -70,6 +70,8 @@ final class Prefs {
             "iconSize": 64.0,
             "defaultViewMode": ViewMode.icon.rawValue,
             "foldersFirst": finder?.bool(forKey: "_FXSortFoldersFirst") ?? false,
+            "searchScopeDefault": finder?.string(forKey: "FXDefaultSearchScope") ?? "SCev",
+            "searchContents": true,
         ]
         if let style = finder?.string(forKey: "FXPreferredViewStyle"), let mode = ViewMode(finderStyle: style) {
             initial["defaultViewMode"] = mode.rawValue
@@ -102,6 +104,24 @@ final class Prefs {
     var foldersFirst: Bool {
         get { defaults.bool(forKey: "foldersFirst") }
         set { defaults.set(newValue, forKey: "foldersFirst"); post() }
+    }
+
+    /// Finder’s “When performing a search” setting: SCev (This Mac), SCcf (current folder)
+    /// or SCsp (the previous scope).
+    var searchScopeDefault: String {
+        get { defaults.string(forKey: "searchScopeDefault") ?? "SCev" }
+        set { defaults.set(newValue, forKey: "searchScopeDefault") }
+    }
+
+    var lastSearchScope: SearchScope? {
+        get { defaults.string(forKey: "lastSearchScope").flatMap(SearchScope.init(rawValue:)) }
+        set { defaults.set(newValue?.rawValue, forKey: "lastSearchScope") }
+    }
+
+    /// Match names and contents (Finder’s default) rather than names only.
+    var searchContents: Bool {
+        get { defaults.bool(forKey: "searchContents") }
+        set { defaults.set(newValue, forKey: "searchContents") }
     }
 
     var iconSize: CGFloat {

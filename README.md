@@ -14,12 +14,18 @@ A native macOS clone of Finder, built with AppKit, that adds two things Finder d
 - Rename (Return), New Folder (⇧⌘N), Duplicate (⌘D), Make Alias, Compress, Move to Bin (⌘⌫) with undo
 - Copy/paste files (⌘C / ⌘V / ⌥⌘V to move), and drag and drop between panes, windows and other apps
 - Quick Look (Space), Get Info (⌘I), Open With, Share, Tags, Copy as Pathname, Open in Terminal
-- Tabs (⌘T), path bar (⌥⌘P), status bar (⌘/), hidden files (⇧⌘.), search in the current folder (⌘F)
+- Tabs (⌘T), path bar (⌥⌘P), status bar (⌘/), hidden files (⇧⌘.)
 - Light and dark mode, using the system's own controls and Finder's symbols
+
+## Search
+
+Search (⌘F) works like Finder's and uses Spotlight, with results arriving as they're found and updating live. A scope bar under the toolbar chooses where to look: **This Mac**, the **disk** the folder is on, or the **current folder**. On the right you choose between **Name & Contents** (Finder's default, matching words in names, contents and metadata) and **Name Only**. Which scope a new search starts with follows the "When performing a search" setting in Scout › Settings, initialised from Finder's.
+
+In an SSH folder, the scopes are the **server** and the **current folder**. Scout runs `find` (names) and `grep` (contents) on the server, limited to 30 seconds and 3,000 results.
 
 ## Go to Folder
 
-**⌘L** (or Finder's ⇧⌘G) opens Go to Folder with the current folder's absolute path selected, like a browser's address bar. Type to replace it, or press → to keep it and continue typing. It behaves like a shell:
+**⌘L** (or Finder's ⇧⌘G) opens Go to Folder over the window, at a fixed spot that doesn't move as matches come and go, with the current folder's absolute path selected, like a browser's address bar. Type to replace it, or press → to keep it and continue typing. It behaves like a shell:
 
 - Paths can be absolute, relative to the current folder, or use `~`, `..`, `$HOME`-style variables, `-` (the previous folder) or `host:/path` for an SSH host. In a remote folder, paths resolve on the server.
 - Names complete inline as you type. **→**, **Tab** or **/** accepts the completion, and **Esc** dismisses it.

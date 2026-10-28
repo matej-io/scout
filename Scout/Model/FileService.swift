@@ -72,21 +72,6 @@ enum FileService {
         }
     }
 
-    static func search(_ query: String, in location: Location, showHidden: Bool, completion: @escaping (Result<[FileItem], Error>) -> Void) {
-        switch location {
-        case .folder(.remote(let host, let path)):
-            let pattern = "*" + query.replacingOccurrences(of: "*", with: "\\*") + "*"
-            let cmd = "find \(shq(path)) -mindepth 1 -iname \(shq(pattern)) -printf '%y\\t%Y\\t%s\\t%T@\\t%p\\0' 2>/dev/null | head -c 4000000"
-            SSHManager.shared.host(host).list(path, command: cmd) { result in
-                completion(result.map { items in showHidden ? items : items.filter { !$0.isHidden } })
-            }
-        case .folder(.local(let url)):
-            spotlight(nil, name: query, onlyIn: url, limit: 2000, completion: completion)
-        default:
-            spotlight(nil, name: query, onlyIn: Location.home, limit: 2000, completion: completion)
-        }
-    }
-
     private static func spotlight(_ query: String?, name: String? = nil, onlyIn: URL?, limit: Int,
                                   completion: @escaping (Result<[FileItem], Error>) -> Void) {
         var args: [String] = []

@@ -23,6 +23,8 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     private(set) var sortKey: SortKey = .name
     private(set) var ascending = true
     private(set) var searchQuery: String?
+    private(set) var searchScope: SearchScope = .thisMac
+    private var activeSearch: SearchHandle?
     private(set) var isLoading = false
     private(set) var loadError: String?
 
@@ -34,6 +36,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     private let indicator = NSView()
     let statusBar = StatusBarView()
     let pathBar = PathBarView()
+    private let scopeBar = SearchScopeBar()
     private let messageView = PaneMessageView()
     private var airDropView: AirDropView?
     private var watcher: DirectoryWatcher?
@@ -57,7 +60,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         root.pane = self
         view = root
 
-        for v in [contentContainer, pathBar, statusBar, indicator, messageView] as [NSView] {
+        for v in [contentContainer, scopeBar, pathBar, statusBar, indicator, messageView] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
@@ -65,6 +68,12 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         indicator.isHidden = true
 
         pathBar.onNavigate = { [weak self] ref in self?.navigate(to: .folder(ref)) }
+        scopeBar.isHidden = true
+        scopeBar.onSelectScope = { [weak self] scope in self?.setSearchScope(scope) }
+        scopeBar.onSelectContents = { [weak self] contents in
+            Prefs.shared.searchContents = contents
+            self?.reload()
+        }
         statusBar.onIconSizeChange = { [weak self] size in
             Prefs.shared.iconSize = size
             self?.content.iconSizeChanged()
@@ -73,8 +82,15 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
 
         pathBarHeight = pathBar.heightAnchor.constraint(equalToConstant: 0)
         statusBarHeight = statusBar.heightAnchor.constraint(equalToConstant: 0)
+        // While searching, the scope bar fills the area under the toolbar and the content starts below it.
+        contentTopToRoot = contentContainer.topAnchor.constraint(equalTo: root.topAnchor)
+        contentTopToScopeBar = contentContainer.topAnchor.constraint(equalTo: scopeBar.bottomAnchor)
         NSLayoutConstraint.activate([
-            contentContainer.topAnchor.constraint(equalTo: root.topAnchor),
+            contentTopToRoot,
+            scopeBar.topAnchor.constraint(equalTo: root.topAnchor),
+            scopeBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scopeBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scopeBar.bottomAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: SearchScopeBar.barHeight),
             contentContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             contentContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             contentContainer.bottomAnchor.constraint(equalTo: pathBar.topAnchor),
@@ -117,6 +133,8 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
 
     static let iconSizeChanged = Notification.Name("ScoutIconSizeChanged")
     private var pathBarHeight: NSLayoutConstraint!
+    private var contentTopToRoot: NSLayoutConstraint!
+    private var contentTopToScopeBar: NSLayoutConstraint!
     private var statusBarHeight: NSLayoutConstraint!
 
     override func viewDidAppear() {
@@ -220,6 +238,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         let modeChanged = applyFolderSettings(for: newLocation)
         location = newLocation
         searchQuery = nil
+        updateScopeBar()
         rawItems = []
         items = []
         if modeChanged { installContent() }
@@ -302,7 +321,9 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     func reload(select: [ItemRef]? = nil) {
         loadToken += 1
         let token = loadToken
-        let keepSelection = select?.isEmpty == false ? select : selectedItems.map(\.ref)
+        activeSearch?.cancel()
+        activeSearch = nil
+        var keepSelection = select?.isEmpty == false ? select : selectedItems.map(\.ref)
         isLoading = true
         loadError = nil
         spinnerWork?.cancel()
@@ -322,7 +343,9 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
                 self.rawItems = items
                 self.items = self.sorted(items)
                 self.hideMessage()
-                self.content.display(self.items, select: keepSelection)
+                // Live search updates keep whatever the user has selected since.
+                self.content.display(self.items, select: keepSelection ?? self.selectedItems.map(\.ref))
+                keepSelection = nil
                 if self.items.isEmpty, self.searchQuery != nil { self.showMessage("No Results", spinner: false) }
             case .failure(let error):
                 self.rawItems = []
@@ -336,7 +359,14 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         }
 
         if let query = searchQuery, !query.isEmpty {
-            FileService.search(query, in: location, showHidden: Prefs.shared.showHidden, completion: handle)
+            activeSearch = FileService.search(query, scope: searchScope, in: location, contents: Prefs.shared.searchContents,
+                                              showHidden: Prefs.shared.showHidden) { [weak self] result, finished in
+                guard let self, token == self.loadToken else { return }
+                // Keep the spinner until there is something to show or the search is done.
+                if case .success(let items) = result, items.isEmpty, !finished { return }
+                handle(result)
+            }
+            if activeSearch == nil { handle(.success([])) }
         } else {
             FileService.list(location, showHidden: Prefs.shared.showHidden, completion: handle)
         }
@@ -459,13 +489,76 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
 
     func search(_ query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let wasSearching = searchQuery != nil
         searchQuery = trimmed.isEmpty ? nil : trimmed
+        if searchQuery != nil && !wasSearching { searchScope = defaultSearchScope }
+        updateScopeBar()
         reload()
         delegate?.paneDidChangeLocation(self)
     }
 
+    func setSearchScope(_ scope: SearchScope) {
+        guard scope != searchScope else { return }
+        searchScope = scope
+        Prefs.shared.lastSearchScope = scope
+        updateScopeBar()
+        reload()
+        delegate?.paneDidChangeLocation(self)
+    }
+
+    /// The scopes Finder offers here: This Mac, the disk and the folder (or the server and the folder over SSH).
+    var searchScopes: [(scope: SearchScope, title: String)] {
+        switch location {
+        case .folder(.local(let url)):
+            var scopes: [(scope: SearchScope, title: String)] = [(.thisMac, "This Mac")]
+            if let volume = FileService.volume(of: url) {
+                scopes.append((.disk, volume.name))
+                if volume.url.standardizedFileURL.path == url.standardizedFileURL.path { return scopes }
+            }
+            scopes.append((.folder, "“\(location.title)”"))
+            return scopes
+        case .folder(.remote(let host, _)):
+            return [(.server, SSHManager.shared.host(host).displayName), (.folder, "“\(location.title)”")]
+        default:
+            return [(.thisMac, "This Mac")]
+        }
+    }
+
+    /// Follows the “When performing a search” setting, like Finder. Whole-server searches over SSH
+    /// are never the default, since they can take a while.
+    private var defaultSearchScope: SearchScope {
+        let available = searchScopes.map(\.scope)
+        var scope: SearchScope
+        switch Prefs.shared.searchScopeDefault {
+        case "SCcf": scope = .folder
+        case "SCsp": scope = Prefs.shared.lastSearchScope ?? .thisMac
+        default: scope = .thisMac
+        }
+        if location.isRemote {
+            scope = Prefs.shared.searchScopeDefault == "SCsp" && Prefs.shared.lastSearchScope == .server ? .server : .folder
+        }
+        if !available.contains(scope) {
+            // A disk’s root folder only offers the disk.
+            scope = scope == .folder && available.contains(.disk) ? .disk : available[0]
+        }
+        return scope
+    }
+
+    private func updateScopeBar() {
+        let searching = searchQuery != nil
+        scopeBar.isHidden = !searching
+        contentTopToRoot.isActive = !searching
+        contentTopToScopeBar.isActive = searching
+        if searching {
+            scopeBar.configure(scopes: searchScopes, selected: searchScope, contents: Prefs.shared.searchContents)
+        }
+    }
+
     var displayTitle: String {
-        if searchQuery != nil { return "Searching “\(location.title)”" }
+        if searchQuery != nil {
+            let title = searchScopes.first { $0.scope == searchScope }?.title ?? location.title
+            return "Searching " + (title.hasPrefix("“") ? title : "“\(title)”")
+        }
         return location.title
     }
 
