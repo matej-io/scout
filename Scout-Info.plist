@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_smb._tcp</string>
+		<string>_sftp-ssh._tcp</string>
+		<string>_ssh._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Scout looks for file servers and SSH hosts on your local network to show them in Network.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Scout asks Finder to empty the Bin.</string>
+</dict>
+</plist>
