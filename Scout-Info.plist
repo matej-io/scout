@@ -12,5 +12,15 @@
 	<string>Scout looks for file servers and SSH hosts on your local network to show them in Network.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Scout asks Finder to empty the Bin.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Scout shows the files on your Desktop.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Scout shows the files in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Scout shows the files in your Downloads folder.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Scout shows the files on external disks.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Scout shows the files on network volumes.</string>
 </dict>
 </plist>

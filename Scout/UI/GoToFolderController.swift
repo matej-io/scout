@@ -1,10 +1,13 @@
 import AppKit
 
-/// Finder’s Go to Folder panel (⇧⌘G): a sheet with a path field, live completions
-/// as you type, recent locations, Tab completion, ↑/↓ to choose and Return to go.
-/// Paths resolve on the SSH host when the active pane is remote, and `host:/path`
-/// opens a folder on any SSH host.
-final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
+/// Go to Folder (⌘L, or Finder’s ⇧⌘G): a sheet with a path field that opens on the current
+/// folder’s absolute path, selected like a browser’s address bar. It behaves like a shell:
+/// paths can be absolute, relative to the current folder, `~`, `..`, `-` (previous folder) or use
+/// `$VARIABLES`; names complete inline as you type (→, Tab or / accepts, Esc dismisses), Tab
+/// completes the common part and then cycles through matches, ⌥⌫ or ⌃W deletes a path component, ⌃U clears,
+/// and pasted quoted, escaped or `file://` paths are cleaned up. Paths resolve on the SSH host
+/// when the active pane is remote, and `host:/path` opens a folder on any SSH host.
+final class GoToFolderController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private struct Suggestion {
         let display: String     // what goes into the field
         let ref: ItemRef
@@ -17,6 +20,11 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
     private let pane: PaneViewController
     private let completion: (Location, ItemRef?) -> Void
     private let field = GoToField()
+    private let fieldEditor: GoToFieldEditor = {
+        let editor = GoToFieldEditor()
+        editor.isFieldEditor = true
+        return editor
+    }()
     private let iconView = NSImageView()
     private let table = NSTableView()
     private let scroll = NSScrollView()
@@ -24,6 +32,12 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
     private var suggestions: [Suggestion] = []
     private var remoteCache: [ItemRef: [FileItem]] = [:]
     private var pendingRemote = Set<ItemRef>()
+
+    private var typed = ""                  // what the user typed, without an inline completion
+    private var inline: Suggestion?         // completion shown selected after the caret
+    private var lastEditInserted = false
+    private var lastEditPasted = false
+    private var cycling = false             // Tab is stepping through the matches
 
     private static let width: CGFloat = 520
     private static let rowHeight: CGFloat = 26
@@ -34,6 +48,8 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         current = controller
         window.beginSheet(controller.window!) { _ in current = nil }
         controller.window?.makeFirstResponder(controller.field)
+        controller.setText(controller.initialText)
+        controller.field.currentEditor()?.selectAll(nil)
         controller.refresh()
     }
 
@@ -45,6 +61,7 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         super.init(window: panel)
+        panel.delegate = self
         build()
     }
 
@@ -64,6 +81,7 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         field.focusRingType = .none
         field.placeholderString = pane.location.isRemote ? "Enter a path on \(remoteHostName ?? "the server")" : "Enter a path"
         field.delegate = self
+        fieldEditor.onEdit = { [weak self] range, string in self?.willEdit(range, string) ?? true }
         field.cell?.isScrollable = true
         field.cell?.wraps = false
         field.lineBreakMode = .byTruncatingHead
@@ -131,6 +149,10 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         window.setFrame(frame, display: true, animate: false)
     }
 
+    func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
+        (client as? GoToField) === field ? fieldEditor : nil
+    }
+
     // MARK: Resolving paths
 
     private var remoteHostName: String? {
@@ -147,6 +169,15 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         return (host, String(input[input.index(after: colon)...]))
     }
 
+    /// The current folder’s absolute path, which the field starts with.
+    private var initialText: String {
+        switch pane.location.ref {
+        case .local(let url)?: return url.path == "/" ? "/" : url.path + "/"
+        case .remote(_, let path)?: return path.isEmpty ? "~/" : (path.hasSuffix("/") ? path : path + "/")
+        default: return ""
+        }
+    }
+
     /// Turns what the user typed into a reference (local or remote).
     private func resolve(_ input: String) -> ItemRef? {
         if let (host, path) = explicitHost(input) {
@@ -156,42 +187,70 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         if case .remote(let host, let base)? = pane.location.ref {
             return .remote(host: host, path: expandRemote(input, home: SSHManager.shared.host(host).home, base: base))
         }
-        var path = (input as NSString).expandingTildeInPath
+        var path = (expandVariables(input) as NSString).expandingTildeInPath
         if !path.hasPrefix("/") {
             let base = pane.location.ref?.localURL?.path ?? Location.home.path
             path = (base as NSString).appendingPathComponent(path)
         }
-        return .local(URL(fileURLWithPath: path))
+        return .local(URL(fileURLWithPath: path).standardizedFileURL)
     }
 
     private func expandRemote(_ input: String, home: String, base: String) -> String {
-        if input == "~" { return home }
-        if input.hasPrefix("~/") { return home + input.dropFirst(1) }
-        if input.hasPrefix("/") { return input }
-        return (base as NSString).appendingPathComponent(input)
+        var path: String
+        if input == "~" { path = home }
+        else if input.hasPrefix("~/") { path = home + input.dropFirst(1) }
+        else if input.hasPrefix("/") { path = input }
+        else { path = (base as NSString).appendingPathComponent(input) }
+        guard path.hasPrefix("/") else { return path }
+        // Resolve . and .. the way a shell would.
+        var parts: [Substring] = []
+        for part in path.split(separator: "/") {
+            if part == "." { continue }
+            if part == ".." { _ = parts.popLast(); continue }
+            parts.append(part)
+        }
+        return "/" + parts.joined(separator: "/")
     }
 
-    /// What to show in the field for a reference, keeping the style the user typed (~, host:).
-    private func display(for ref: ItemRef, isDirectory: Bool, typed: String) -> String {
-        var text: String
-        switch ref {
-        case .local(let url):
-            text = url.path
-            if typed.hasPrefix("~") { text = (text as NSString).abbreviatingWithTildeInPath }
-        case .remote(let host, let path):
-            text = path
-            let home = SSHManager.shared.host(host).home
-            if typed.hasPrefix("~"), path.hasPrefix(home) { text = "~" + path.dropFirst(home.count) }
-            if explicitHost(typed) != nil { text = "\(host):" + text }
+    /// Expands `$NAME` and `${NAME}` from the environment, leaving unknown names alone.
+    private func expandVariables(_ input: String) -> String {
+        guard input.contains("$") else { return input }
+        let regex = try! NSRegularExpression(pattern: #"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"#)
+        let env = ProcessInfo.processInfo.environment
+        let result = NSMutableString(string: input)
+        for match in regex.matches(in: input, range: NSRange(location: 0, length: result.length)).reversed() {
+            let name = (input as NSString).substring(with: match.range(at: 1))
+            if let value = env[name] { result.replaceCharacters(in: match.range, with: value) }
         }
-        if isDirectory && !text.hasSuffix("/") { text += "/" }
-        return text
+        return result as String
+    }
+
+    /// `~`, `.`, `..` and paths ending in them mean “inside that folder” when listing completions.
+    private func isFolderShorthand(_ input: String) -> Bool {
+        ["~", ".", ".."].contains(input) || input.hasSuffix("/.") || input.hasSuffix("/..")
+            || (explicitHost(input).map { $0.path.isEmpty || $0.path == "~" } ?? false)
+    }
+
+    /// Cleans up a pasted path: quotes, backslash escapes, file:// URLs and stray whitespace.
+    private func cleanedUpPaste(_ text: String) -> String {
+        var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("file://"), let url = URL(string: s), url.isFileURL {
+            s = url.path + (s.hasSuffix("/") && url.path != "/" ? "/" : "")
+        }
+        if s.count >= 2, let quote = s.first, quote == "'" || quote == "\"", s.last == quote {
+            s = String(s.dropFirst().dropLast())
+        } else if s.contains("\\") {
+            s = s.replacingOccurrences(of: #"\\(.)"#, with: "$1", options: .regularExpression)
+        }
+        return s
     }
 
     // MARK: Suggestions
 
-    private func refresh() {
-        let input = field.stringValue
+    /// Recomputes the suggestions for what the user typed. With `autocomplete`, the best match
+    /// is completed inline after the caret, like a browser’s address bar.
+    private func refresh(autocomplete: Bool = false) {
+        let input = typed
         updateIcon(for: input)
         if input.isEmpty {
             suggestions = GoToFolderController.history.compactMap { entry in
@@ -204,25 +263,44 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
             return
         }
 
-        guard let resolved = resolve(input) else { suggestions = []; reloadTable(selectFirst: false); return }
-        let endsWithSlash = input.hasSuffix("/")
+        if input == "-" {
+            suggestions = pane.previousLocation?.ref.map { ref in
+                [Suggestion(display: "-", ref: ref, isDirectory: true, icon: icon(for: ref, isDirectory: true))]
+            } ?? []
+            reloadTable(selectFirst: false)
+            return
+        }
+
+        let listing = isFolderShorthand(input) ? input + "/" : input
+        guard let resolved = resolve(listing) else { suggestions = []; reloadTable(selectFirst: false); return }
+        let endsWithSlash = listing.hasSuffix("/")
         let directory = endsWithSlash ? resolved : (resolved.parent ?? resolved)
-        let prefix = endsWithSlash ? "" : resolved.name
+        let prefix = endsWithSlash ? "" : (listing as NSString).lastPathComponent
         let showHidden = Prefs.shared.showHidden || prefix.hasPrefix(".")
+        // Completions keep exactly what was typed before the name, like a shell (~/, ../, $HOME/, host:).
+        let typedFolder: String
+        if let slash = listing.lastIndex(of: "/") {
+            typedFolder = String(listing[...slash])
+        } else if let (host, _) = explicitHost(listing) {
+            typedFolder = "\(host):"
+        } else {
+            typedFolder = ""
+        }
 
         let finish: ([FileItem]) -> Void = { [weak self] items in
-            guard let self, self.field.stringValue == input else { return }
+            guard let self, self.typed == input else { return }
             var matches = items.filter { item in
-                (showHidden || !item.isHidden) && (prefix.isEmpty || item.name.lowercased().hasPrefix(prefix.lowercased()))
+                !FileService.alwaysHidden.contains(item.name) && (showHidden || !item.isHidden) && (prefix.isEmpty || item.name.lowercased().hasPrefix(prefix.lowercased()))
             }
             matches.sort { a, b in
                 if a.isBrowsable != b.isBrowsable { return a.isBrowsable }
                 return a.name.localizedStandardCompare(b.name) == .orderedAscending
             }
             var list = matches.prefix(60).map { item in
-                Suggestion(display: self.display(for: item.ref, isDirectory: item.isBrowsable, typed: input),
+                Suggestion(display: typedFolder + item.name + (item.isBrowsable ? "/" : ""),
                            ref: item.ref, isDirectory: item.isBrowsable, icon: item.icon)
             }
+            let best = list.first
             // Bare words also match recent locations, like Finder.
             if !input.contains("/") && self.explicitHost(input) == nil {
                 for entry in GoToFolderController.history where (entry as NSString).lastPathComponent.lowercased().hasPrefix(input.lowercased()) {
@@ -232,6 +310,10 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
             }
             self.suggestions = list
             self.reloadTable(selectFirst: false)
+            if autocomplete, !prefix.isEmpty, let best, best.display.count > input.count,
+               best.display.lowercased().hasPrefix(input.lowercased()) {
+                self.showInline(best)
+            }
         }
 
         switch directory {
@@ -250,7 +332,7 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
                     guard let self else { return }
                     self.pendingRemote.remove(directory)
                     self.remoteCache[directory] = (try? result.get()) ?? []
-                    self.refresh()
+                    if self.typed == input { self.refresh(autocomplete: autocomplete) }
                 }
             }
         }
@@ -323,7 +405,11 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         cell.imageView?.image = suggestion.icon
         var text = suggestion.display
         if text.count > 1, text.hasSuffix("/") { text.removeLast() }
-        cell.textField?.stringValue = text
+        // The folder part is dimmed so the names stand out.
+        let folderLength = text.lastIndex(where: { $0 == "/" || $0 == ":" }).map { text[...$0].utf16.count } ?? 0
+        let attributed = NSMutableAttributedString(string: text, attributes: [.foregroundColor: NSColor.labelColor])
+        attributed.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: NSRange(location: 0, length: folderLength))
+        cell.textField?.attributedStringValue = attributed
         return cell
     }
 
@@ -331,7 +417,7 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         let row = table.clickedRow
         guard row >= 0 else { return }
         // Clicking puts the path into the field so you can keep typing.
-        field.stringValue = suggestions[row].display
+        setText(suggestions[row].display)
         moveCaretToEnd()
         refresh()
     }
@@ -344,8 +430,32 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
 
     // MARK: Keys
 
+    /// Called before every edit in the field.
+    private func willEdit(_ range: NSRange, _ string: String?) -> Bool {
+        let text = string ?? ""
+        // Typing / over an inline folder completion accepts it instead of replacing it.
+        if text == "/", let inline, inline.display.hasSuffix("/"), range == inlineRange {
+            acceptInline()
+            return false
+        }
+        lastEditInserted = !text.isEmpty
+        lastEditPasted = text.count > 1
+        return true
+    }
+
     func controlTextDidChange(_ obj: Notification) {
-        refresh()
+        if lastEditPasted {
+            let cleaned = cleanedUpPaste(field.stringValue)
+            if cleaned != field.stringValue {
+                field.stringValue = cleaned
+                moveCaretToEnd()
+            }
+        }
+        typed = field.stringValue
+        inline = nil
+        cycling = false
+        let caretAtEnd = field.currentEditor()?.selectedRange == NSRange(location: (typed as NSString).length, length: 0)
+        refresh(autocomplete: lastEditInserted && caretAtEnd)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -354,15 +464,74 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
             moveSelection(by: 1); return true
         case #selector(NSResponder.moveUp(_:)):
             moveSelection(by: -1); return true
+        case #selector(NSResponder.moveRight(_:)), #selector(NSResponder.moveToEndOfLine(_:)), #selector(NSResponder.moveToEndOfDocument(_:)):
+            guard inline != nil else { return false }
+            acceptInline(); return true
         case #selector(NSResponder.insertTab(_:)):
-            complete(); return true
+            if inline != nil { acceptInline() } else { complete() }
+            return true
+        case #selector(NSResponder.insertBacktab(_:)):
+            cycle(by: -1); return true
+        case #selector(NSResponder.deleteWordBackward(_:)):
+            return deletePathComponent()
         case #selector(NSResponder.insertNewline(_:)):
             commit(); return true
         case #selector(NSResponder.cancelOperation(_:)):
-            close(); return true
+            if inline != nil { dismissInline() } else { close() }
+            return true
         default:
             return false
         }
+    }
+
+    /// Puts text in the field as if the user had typed it.
+    private func setText(_ text: String) {
+        field.stringValue = text
+        typed = text
+        inline = nil
+        cycling = false
+    }
+
+    private var inlineRange: NSRange? {
+        guard let inline else { return nil }
+        let start = (typed as NSString).length
+        return NSRange(location: start, length: (inline.display as NSString).length - start)
+    }
+
+    private func showInline(_ suggestion: Suggestion) {
+        field.stringValue = suggestion.display
+        inline = suggestion
+        if let range = inlineRange { field.currentEditor()?.selectedRange = range }
+    }
+
+    private func acceptInline() {
+        guard let inline else { return }
+        setText(inline.display)
+        moveCaretToEnd()
+        refresh()
+    }
+
+    private func dismissInline() {
+        field.stringValue = typed
+        inline = nil
+        moveCaretToEnd()
+    }
+
+    /// ⌥⌫ / ⌃W: deletes back to the previous path component, like a shell.
+    private func deletePathComponent() -> Bool {
+        guard let editor = field.currentEditor() else { return false }
+        if inline == nil {
+            let selection = editor.selectedRange
+            guard selection.length == 0, selection.location == (typed as NSString).length else { return false }
+        }
+        var text = typed
+        guard !text.isEmpty, text != "/" else { NSSound.beep(); return true }
+        if text.hasSuffix("/") { text.removeLast() }
+        if let slash = text.lastIndex(of: "/") { text = String(text[...slash]) } else { text = "" }
+        setText(text)
+        moveCaretToEnd()
+        refresh()
+        return true
     }
 
     private func moveSelection(by delta: Int) {
@@ -373,26 +542,39 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
         table.scrollRowToVisible(next)
     }
 
-    /// Tab: completes the highlighted or common part of the matches; repeated Tabs step through them.
+    /// Tab, like a shell: completes a single match, otherwise the part all matches share;
+    /// when nothing more is shared, repeated Tabs step through the matches (⇧Tab goes back).
     private func complete() {
         guard !suggestions.isEmpty else { NSSound.beep(); return }
+        if cycling { cycle(by: 1); return }
         if table.selectedRow >= 0 {
-            field.stringValue = suggestions[table.selectedRow].display
+            setText(suggestions[table.selectedRow].display)
         } else if suggestions.count == 1 {
-            field.stringValue = suggestions[0].display
+            setText(suggestions[0].display)
         } else {
             let names = suggestions.map(\.display)
             let common = names.dropFirst().reduce(names[0]) { prefix, name in
                 String(zip(prefix, name).prefix { $0.lowercased() == $1.lowercased() }.map(\.0))
             }
-            if common.count > field.stringValue.count {
-                field.stringValue = common
-            } else {
-                field.stringValue = suggestions[0].display
-            }
+            guard common.count > typed.count else { cycle(by: 1); return }
+            setText(common)
         }
         moveCaretToEnd()
         refresh()
+    }
+
+    /// Shows the next (or previous) match in the field while keeping the list of matches.
+    private func cycle(by delta: Int) {
+        guard !suggestions.isEmpty else { NSSound.beep(); return }
+        let row = cycling && table.selectedRow >= 0
+            ? (table.selectedRow + delta + suggestions.count) % suggestions.count
+            : (delta > 0 ? 0 : suggestions.count - 1)
+        cycling = true
+        inline = nil
+        table.selectRowIndexes([row], byExtendingSelection: false)
+        table.scrollRowToVisible(row)
+        field.stringValue = suggestions[row].display
+        moveCaretToEnd()
     }
 
     private func moveCaretToEnd() {
@@ -407,6 +589,12 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
             return
         }
         let input = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if input == "-" {
+            guard let previous = pane.previousLocation else { shake(); return }
+            close()
+            completion(previous, nil)
+            return
+        }
         guard !input.isEmpty, let ref = resolve(input) else { shake(); return }
         switch ref {
         case .local(let url):
@@ -489,9 +677,9 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
     /// Debug hook used by snapshots: types text into the open panel.
     static func debugType(_ text: String) {
         guard let controller = current else { return }
-        controller.field.stringValue = text
+        controller.setText(text)
         controller.moveCaretToEnd()
-        controller.refresh()
+        controller.refresh(autocomplete: true)
     }
 
     // MARK: History (seeded from Finder's own Go to Folder history)
@@ -510,5 +698,37 @@ final class GoToFolderController: NSWindowController, NSTextFieldDelegate, NSTab
     }
 }
 
-/// The path field. Keeps the caret at the end after programmatic changes.
-final class GoToField: NSTextField {}
+/// The path field’s editor, which reports edits before they happen.
+final class GoToFieldEditor: NSTextView {
+    var onEdit: ((NSRange, String?) -> Bool)?
+
+    override func shouldChangeText(in range: NSRange, replacementString string: String?) -> Bool {
+        guard onEdit?(range, string) ?? true else { return false }
+        return super.shouldChangeText(in: range, replacementString: string)
+    }
+
+    /// Shell keys macOS doesn’t bind: ⌃W deletes a path component, ⌃U clears to the start.
+    override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .control {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "w": doCommand(by: #selector(NSResponder.deleteWordBackward(_:))); return
+            case "u": doCommand(by: #selector(NSResponder.deleteToBeginningOfLine(_:))); return
+            default: break
+            }
+        }
+        super.keyDown(with: event)
+    }
+}
+
+/// The path field. ⌘L (or ⇧⌘G) selects the whole path again.
+final class GoToField: NSTextField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if (modifiers == .command && key == "l") || (modifiers == [.command, .shift] && key == "g") {
+            currentEditor()?.selectAll(nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}

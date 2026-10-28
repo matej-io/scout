@@ -11,6 +11,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         _ = SSHManager.shared
         NetworkBrowser.shared.start()
         Snapshot.applyAppearance()
+        // Ask for Full Disk Access before the first window touches Desktop, Documents or Downloads.
+        if FullDiskAccess.shouldAskAtLaunch {
+            FullDiskAccessController.present { [weak self] in self?.openFirstWindow() }
+        } else {
+            openFirstWindow()
+        }
+    }
+
+    private func openFirstWindow() {
         newWindow(nil)
         NSApp.activate()
         if ProcessInfo.processInfo.environment["SCOUT_SPRINGTEST"] != nil { SelfTest.runSpring() }
@@ -89,6 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func showSettings(_ sender: Any?) {
         SettingsWindowController.shared.showWindow(nil)
+    }
+
+    @objc func showFullDiskAccess(_ sender: Any?) {
+        if FullDiskAccess.isGranted { FullDiskAccess.openSettings() } else { FullDiskAccessController.present() }
     }
 
     @objc func showHelp(_ sender: Any?) {
@@ -250,7 +263,12 @@ enum MainMenu {
         menu.addItem(item("Applications", go, "a", [.command, .shift], tag: 10))
         menu.addItem(item("Utilities", go, "u", [.command, .shift], tag: 11))
         menu.addItem(.separator())
-        menu.addItem(item("Go to Folder…", #selector(MainWindowController.goToFolder(_:)), "g", [.command, .shift]))
+        menu.addItem(item("Go to Folder…", #selector(MainWindowController.goToFolder(_:)), "l"))
+        // Finder’s ⇧⌘G keeps working too.
+        let finderShortcut = item("Go to Folder…", #selector(MainWindowController.goToFolder(_:)), "g", [.command, .shift])
+        finderShortcut.isHidden = true
+        finderShortcut.allowsKeyEquivalentWhenHidden = true
+        menu.addItem(finderShortcut)
         menu.addItem(item("Connect to Server…", #selector(MainWindowController.connectToServer(_:)), "k"))
         return menu
     }

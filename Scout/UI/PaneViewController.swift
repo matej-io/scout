@@ -15,6 +15,8 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     private(set) var location: Location
     private var backStack: [Location] = []
     private var forwardStack: [Location] = []
+    /// The folder before this one, for `cd -` in Go to Folder.
+    var previousLocation: Location? { backStack.last }
     private(set) var items: [FileItem] = []
     private var rawItems: [FileItem] = []
     private(set) var viewMode: ViewMode

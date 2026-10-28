@@ -1,7 +1,7 @@
 import AppKit
 
 /// A small Finder-style settings window.
-final class SettingsWindowController: NSWindowController {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     static let shared = SettingsWindowController()
 
     private init() {
@@ -9,11 +9,35 @@ final class SettingsWindowController: NSWindowController {
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Scout Settings"
         super.init(window: window)
+        window.delegate = self
         build()
         window.center()
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private let accessStatus = NSTextField(wrappingLabelWithString: "")
+    private let accessButton = NSButton(title: "", target: nil, action: #selector(AppDelegate.showFullDiskAccess(_:)))
+
+    override func showWindow(_ sender: Any?) {
+        refreshAccess()
+        super.showWindow(sender)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) { refreshAccess() }
+
+    private func refreshAccess() {
+        let granted = FullDiskAccess.isGranted
+        accessStatus.stringValue = granted
+            ? "Scout has Full Disk Access."
+            : "Scout doesn’t have Full Disk Access, so macOS asks before it opens Desktop, Documents, Downloads and external disks, and some folders such as the \(Prefs.trashTitle) stay empty."
+        accessButton.title = granted ? "Open Privacy Settings…" : "Set Up Full Disk Access…"
+        guard let window, let stack = window.contentView else { return }
+        let size = stack.fittingSize
+        var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: NSSize(width: 420, height: size.height)))
+        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        window.setFrame(frame, display: true)
+    }
 
     private func checkbox(_ title: String, _ value: Bool, _ action: Selector) -> NSButton {
         let button = NSButton(checkboxWithTitle: title, target: self, action: action)
@@ -27,6 +51,11 @@ final class SettingsWindowController: NSWindowController {
         general.font = .boldSystemFont(ofSize: 13)
         let ssh = NSTextField(labelWithString: "SSH")
         ssh.font = .boldSystemFont(ofSize: 13)
+        let privacy = NSTextField(labelWithString: "Privacy")
+        privacy.font = .boldSystemFont(ofSize: 13)
+        accessStatus.font = .systemFont(ofSize: 11)
+        accessStatus.textColor = .secondaryLabelColor
+        accessStatus.preferredMaxLayoutWidth = 380
 
         let keys = SSHConfig.privateKeys().map(\.lastPathComponent)
         let hosts = SSHConfig.load().map(\.alias)
@@ -45,6 +74,9 @@ final class SettingsWindowController: NSWindowController {
             checkbox("Show path bar", prefs.showPathBar, #selector(togglePath(_:))),
             checkbox("Show status bar", prefs.showStatusBar, #selector(toggleStatus(_:))),
             checkbox("Show Tags in sidebar", prefs.showTags, #selector(toggleTags(_:))),
+            privacy,
+            accessStatus,
+            accessButton,
             ssh,
             sshInfo,
         ])
@@ -52,6 +84,7 @@ final class SettingsWindowController: NSWindowController {
         stack.alignment = .leading
         stack.spacing = 8
         stack.setCustomSpacing(18, after: stack.arrangedSubviews[5])
+        stack.setCustomSpacing(18, after: accessButton)
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         window?.contentView = stack
     }
