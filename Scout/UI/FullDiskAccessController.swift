@@ -109,7 +109,7 @@ final class FullDiskAccessController: NSWindowController, NSWindowDelegate {
         let buttons = NSStackView(views: [later, open])
         buttons.spacing = 12
 
-        let footer = NSTextField(labelWithString: "You can do this later in Scout › Settings.")
+        let footer = NSTextField(labelWithString: "You can do this later from Scout › Full Disk Access…")
         footer.font = .systemFont(ofSize: 11)
         footer.textColor = .tertiaryLabelColor
 

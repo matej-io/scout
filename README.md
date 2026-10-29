@@ -19,7 +19,7 @@ A native macOS clone of Finder, built with AppKit, that adds two things Finder d
 
 ## Search
 
-Search (⌘F) works like Finder's and uses Spotlight, with results arriving as they're found and updating live. A scope bar under the toolbar chooses where to look: **This Mac**, the **disk** the folder is on, or the **current folder**. On the right you choose between **Name & Contents** (Finder's default, matching words in names, contents and metadata) and **Name Only**. Which scope a new search starts with follows the "When performing a search" setting in Scout › Settings, initialised from Finder's.
+Search (⌘F) works like Finder's and uses Spotlight, with results arriving as they're found and updating live. A scope bar under the toolbar chooses where to look: **This Mac**, the **disk** the folder is on, or the **current folder**. On the right you choose between **Name & Contents** (Finder's default, matching words in names, contents and metadata) and **Name Only**. Which scope a new search starts with follows `search-scope` in the [configuration file](#configuration), initialised from Finder's "When performing a search" setting.
 
 In an SSH folder, the scopes are the **server** and the **current folder**. Scout runs `find` (names) and `grep` (contents) on the server, limited to 30 seconds and 3,000 results.
 
@@ -45,6 +45,57 @@ In an SSH folder, the scopes are the **server** and the **current folder**. Scou
 
 Download the latest `Scout-<version>-arm64.dmg` from [Releases](https://github.com/matej-io/scout/releases), open it and drag Scout to Applications. Builds are for Apple silicon, need macOS 15 or later, and are signed with Developer ID and notarized by Apple.
 
+## Configuration
+
+Scout has no settings window. Like Ghostty, it reads a text file, `~/.config/us.zenpl.scout/config` (or `$XDG_CONFIG_HOME/us.zenpl.scout/config`). **⌘,** opens it in your text editor, creating it with every option commented out. Scout rereads it when you switch back to Scout, or with **⇧⌘,** (Reload Configuration).
+
+```ini
+show-hidden-files = true
+search-scope = current-folder   # this-mac, current-folder or previous
+terminal = ghostty
+```
+
+Options that aren't set follow Finder's settings. View menu toggles such as Show Hidden Files still work, and last until the file is next reloaded.
+
+### Open in Terminal
+
+`terminal` chooses the app: `terminal` (the default), `iterm`, `ghostty`, `warp`, `kitty`, `wezterm`, `alacritty` or `cmux`. Any other value is treated as an app name, for local folders only. SSH folders open with `ssh -t host`, starting in the folder, in every preset except Warp, which can't be told to run a command.
+
+For anything else, `terminal-command` runs a command through your login shell with these variables set:
+
+| Variable | Value |
+| --- | --- |
+| `SCOUT_DIR` | the local folder (empty for SSH folders) |
+| `SCOUT_HOST` | the SSH host (empty for local folders) |
+| `SCOUT_PATH` | the folder's path, on the Mac or on the host |
+| `SCOUT_COMMAND` | a shell command that starts a shell in the folder, through ssh for SSH folders |
+
+```ini
+terminal-command = open -a Ghostty "$SCOUT_DIR"
+terminal-command = ~/.config/us.zenpl.scout/open-terminal.sh
+```
+
+If the command fails, Scout shows its error output.
+
+For example, this script opens a local folder as a new tab in the [cmux](https://cmux.dev) workspace named `mac`, or in a new workspace if there isn’t one. cmux only accepts socket connections from processes it started, so set `automation.socketControlMode` to `password` (with a `socketPassword`) or `allowAll` in `~/.config/cmux/cmux.json`.
+
+```sh
+#!/bin/sh
+cmux=/Applications/cmux.app/Contents/Resources/bin/cmux
+name=${SCOUT_HOST:-mac}
+list=$("$cmux" workspace list) || exit 1
+ws=$(printf '%s\n' "$list" | awk -v name="$name" '
+  { ref = ""; hit = 0
+    for (i = 1; i <= NF; i++) { if ($i ~ /^workspace:[0-9]+$/) ref = $i; if ($i == name) hit = 1 }
+    if (hit && ref != "") { print ref; exit } }')
+if [ -z "$ws" ]; then
+  "$cmux" "$SCOUT_DIR"              # no such workspace: open a new one
+else
+  "$cmux" new-surface --workspace "$ws" --working-directory "$SCOUT_DIR" --focus true &&
+    "$cmux" workspace select "$ws"
+fi && open -a cmux
+```
+
 ## Releasing
 
 ```sh
@@ -63,7 +114,7 @@ xcodebuild -project Scout.xcodeproj -scheme Scout -configuration Release -derive
 open build/Build/Products/Release/Scout.app
 ```
 
-The app isn't sandboxed, because it needs `~/.ssh` and `/usr/bin/ssh`. On first launch, before it opens a window, Scout offers to set up Full Disk Access, which lets it browse protected folders such as the Bin and stops macOS asking separately about Desktop, Documents, Downloads and each external disk. You can set it up later in Scout › Settings.
+The app isn't sandboxed, because it needs `~/.ssh` and `/usr/bin/ssh`. On first launch, before it opens a window, Scout offers to set up Full Disk Access, which lets it browse protected folders such as the Bin and stops macOS asking separately about Desktop, Documents, Downloads and each external disk. You can set it up later with Scout › Full Disk Access….
 
 The app icon is `Scout/AppIcon.icon` (Icon Composer format), generated by `swift design/icons/make-app-icon.swift Scout/AppIcon.icon`.
 

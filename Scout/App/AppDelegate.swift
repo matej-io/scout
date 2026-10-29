@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSApp.mainMenu = MainMenu.build()
         _ = SSHManager.shared
         _ = Updater.shared
+        Config.shared.reload()
         NetworkBrowser.shared.start()
         Snapshot.applyAppearance()
         // Ask for Full Disk Access before the first window touches Desktop, Documents or Downloads.
@@ -97,8 +98,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if alert.runModal() == .alertFirstButtonReturn { FileOps.emptyTrash() }
     }
 
+    /// Settings live in a text file, like Ghostty’s, so this opens it in the text editor.
     @objc func showSettings(_ sender: Any?) {
-        SettingsWindowController.shared.showWindow(nil)
+        Config.openInEditor()
+    }
+
+    @objc func reloadConfig(_ sender: Any?) {
+        Config.shared.reload(reportMissing: true)
     }
 
     @objc func showFullDiskAccess(_ sender: Any?) {
@@ -161,6 +167,8 @@ enum MainMenu {
         menu.addItem(item("Check for Updates…", #selector(AppDelegate.checkForUpdates(_:))))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(AppDelegate.showSettings(_:)), ","))
+        menu.addItem(item("Reload Configuration", #selector(AppDelegate.reloadConfig(_:)), ",", [.command, .shift]))
+        menu.addItem(item("Full Disk Access…", #selector(AppDelegate.showFullDiskAccess(_:))))
         menu.addItem(.separator())
         menu.addItem(item("Empty \(Prefs.trashTitle)…", #selector(AppDelegate.emptyTrash(_:)), "\u{8}", [.command, .shift]))
         menu.addItem(.separator())

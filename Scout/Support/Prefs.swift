@@ -81,6 +81,19 @@ final class Prefs {
 
     private func post() { NotificationCenter.default.post(name: Prefs.changed, object: nil) }
 
+    /// Takes the values set in the config file, leaving the rest as they are.
+    func apply(_ config: Config) {
+        let bools = ["show-hidden-files": "showHidden", "folders-first": "foldersFirst", "show-path-bar": "showPathBar",
+                     "show-status-bar": "showStatusBar", "show-tags": "showTags", "show-recents": "showRecents"]
+        for (key, pref) in bools {
+            if let value = config.bool(key) { defaults.set(value, forKey: pref) }
+        }
+        if let scope = config.string("search-scope") {
+            searchScopeDefault = ["this-mac": "SCev", "current-folder": "SCcf", "previous": "SCsp"][scope] ?? "SCev"
+        }
+        post()
+    }
+
     var showHidden: Bool {
         get { defaults.bool(forKey: "showHidden") }
         set { defaults.set(newValue, forKey: "showHidden"); post() }

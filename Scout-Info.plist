@@ -17,7 +17,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Scout looks for file servers and SSH hosts on your local network to show them in Network.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Scout asks Finder to empty the Bin.</string>
+	<string>Scout asks Finder to empty the Bin, and your terminal app to open folders.</string>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>Scout shows the files on your Desktop.</string>
 	<key>NSDocumentsFolderUsageDescription</key>

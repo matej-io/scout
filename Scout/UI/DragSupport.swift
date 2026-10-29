@@ -163,25 +163,6 @@ enum Clipboard {
     static var refs: [ItemRef] { DragSupport.refs(from: .general) }
 }
 
-// MARK: - Terminal
-
-enum Terminal {
-    static func open(_ ref: ItemRef) {
-        switch ref {
-        case .local(let url):
-            NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
-                                    configuration: NSWorkspace.OpenConfiguration())
-        case .remote(let host, let path):
-            let cd = path.isEmpty ? "" : "cd \(shq(path)) 2>/dev/null; "
-            let command = "ssh -t \(shq(host)) \(shq(cd + "exec \"$SHELL\" -l"))"
-            let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            let script = NSAppleScript(source: "tell application \"Terminal\"\nactivate\ndo script \"\(escaped)\"\nend tell")
-            var error: NSDictionary?
-            script?.executeAndReturnError(&error)
-        }
-    }
-}
-
 // MARK: - Thumbnails
 
 final class Thumbnails {
