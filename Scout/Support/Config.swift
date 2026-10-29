@@ -1,6 +1,6 @@
 import AppKit
 
-/// Scout's settings file, `~/.config/us.zenpl.scout/config`, written like Ghostty's: one `key = value`
+/// Scout's settings file, `~/.config/io.matej.Scout/config`, written like Ghostty's: one `key = value`
 /// per line, `#` starts a comment, and a later line wins over an earlier one.
 /// The file is read at launch and again whenever it has changed when Scout comes to the front
 /// (or on Reload Configuration). Its values win over menu toggles such as Show Hidden Files,
@@ -31,7 +31,7 @@ final class Config {
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
         let base = xdg.map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config")
-        return base.appendingPathComponent("us.zenpl.scout/config")
+        return base.appendingPathComponent("io.matej.Scout/config")
     }
 
     private(set) var values: [String: String] = [:]
@@ -161,7 +161,7 @@ final class Config {
     #   SCOUT_PATH     the folder’s path, on the Mac or on the host
     #   SCOUT_COMMAND  a shell command that starts a shell in the folder (via ssh for SSH folders)
     # terminal-command = open -a Ghostty "$SCOUT_DIR"
-    # terminal-command = ~/.config/us.zenpl.scout/open-terminal.sh
+    # terminal-command = ~/.config/io.matej.Scout/open-terminal.sh
 
     """
 }

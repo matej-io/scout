@@ -47,7 +47,7 @@ Download the latest `Scout-<version>-arm64.dmg` from [Releases](https://github.c
 
 ## Configuration
 
-Scout has no settings window. Like Ghostty, it reads a text file, `~/.config/us.zenpl.scout/config` (or `$XDG_CONFIG_HOME/us.zenpl.scout/config`). **⌘,** opens it in your text editor, creating it with every option commented out. Scout rereads it when you switch back to Scout, or with **⇧⌘,** (Reload Configuration).
+Scout has no settings window. Like Ghostty, it reads a text file, `~/.config/io.matej.Scout/config` (or `$XDG_CONFIG_HOME/io.matej.Scout/config`). **⌘,** opens it in your text editor, creating it with every option commented out. Scout rereads it when you switch back to Scout, or with **⇧⌘,** (Reload Configuration).
 
 ```ini
 show-hidden-files = true
@@ -72,7 +72,7 @@ For anything else, `terminal-command` runs a command through your login shell wi
 
 ```ini
 terminal-command = open -a Ghostty "$SCOUT_DIR"
-terminal-command = ~/.config/us.zenpl.scout/open-terminal.sh
+terminal-command = ~/.config/io.matej.Scout/open-terminal.sh
 ```
 
 If the command fails, Scout shows its error output.
