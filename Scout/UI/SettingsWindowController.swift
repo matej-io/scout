@@ -53,6 +53,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ssh.font = .boldSystemFont(ofSize: 13)
         let privacy = NSTextField(labelWithString: "Privacy")
         privacy.font = .boldSystemFont(ofSize: 13)
+        let updates = NSTextField(labelWithString: "Updates")
+        updates.font = .boldSystemFont(ofSize: 13)
+        let autoUpdate = checkbox("Check for updates automatically", Updater.shared.automaticallyChecks, #selector(toggleAutoUpdate(_:)))
         accessStatus.font = .systemFont(ofSize: 11)
         accessStatus.textColor = .secondaryLabelColor
         accessStatus.preferredMaxLayoutWidth = 380
@@ -88,6 +91,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             privacy,
             accessStatus,
             accessButton,
+            updates,
+            autoUpdate,
             ssh,
             sshInfo,
         ])
@@ -97,6 +102,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.setCustomSpacing(14, after: stack.arrangedSubviews[5])
         stack.setCustomSpacing(18, after: searchRow)
         stack.setCustomSpacing(18, after: accessButton)
+        stack.setCustomSpacing(18, after: autoUpdate)
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         window?.contentView = stack
     }
@@ -106,6 +112,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func togglePath(_ sender: NSButton) { Prefs.shared.showPathBar = sender.state == .on }
     @objc private func toggleStatus(_ sender: NSButton) { Prefs.shared.showStatusBar = sender.state == .on }
     @objc private func toggleTags(_ sender: NSButton) { Prefs.shared.showTags = sender.state == .on }
+    @objc private func toggleAutoUpdate(_ sender: NSButton) { Updater.shared.automaticallyChecks = sender.state == .on }
     @objc private func searchScopeChanged(_ sender: NSPopUpButton) {
         Prefs.shared.searchScopeDefault = ["SCev", "SCcf", "SCsp"][sender.indexOfSelectedItem]
     }

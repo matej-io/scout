@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         AskPass.install()
         NSApp.mainMenu = MainMenu.build()
         _ = SSHManager.shared
+        _ = Updater.shared
         NetworkBrowser.shared.start()
         Snapshot.applyAppearance()
         // Ask for Full Disk Access before the first window touches Desktop, Documents or Downloads.
@@ -104,11 +105,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if FullDiskAccess.isGranted { FullDiskAccess.openSettings() } else { FullDiskAccessController.present() }
     }
 
+    @objc func checkForUpdates(_ sender: Any?) {
+        Updater.shared.checkForUpdates()
+    }
+
     @objc func showHelp(_ sender: Any?) {
         if let url = URL(string: "https://github.com/matej-io/scout") { NSWorkspace.shared.open(url) }
     }
 
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { true }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(checkForUpdates(_:)) {
+            menuItem.title = Updater.shared.availableVersion.map { "Update to Scout \($0)…" } ?? "Check for Updates…"
+            return Updater.shared.canCheckForUpdates
+        }
+        return true
+    }
 }
 
 // MARK: - Main menu (mirrors Finder’s)
@@ -147,6 +158,7 @@ enum MainMenu {
     private static func appMenu() -> NSMenu {
         let menu = NSMenu(title: "Scout")
         menu.addItem(item("About Scout", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
+        menu.addItem(item("Check for Updates…", #selector(AppDelegate.checkForUpdates(_:))))
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(AppDelegate.showSettings(_:)), ","))
         menu.addItem(.separator())

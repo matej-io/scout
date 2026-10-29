@@ -71,6 +71,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private var navGroup: NSToolbarItemGroup?
     private var viewGroup: NSToolbarItemGroup?
     private var searchItem: NSSearchToolbarItem?
+    private var updateItem: NSToolbarItem?
     private var previewURLs: [URL] = []
     private lazy var shareConfiguration = ShareConfiguration { [weak self] in
         self?.activePane.selectedItems.compactMap { $0.ref.localURL } ?? []
@@ -90,6 +91,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         static let split = NSToolbarItem.Identifier("split")
         static let quickLook = NSToolbarItem.Identifier("quickLook")
         static let terminal = NSToolbarItem.Identifier("terminal")
+        static let update = NSToolbarItem.Identifier("update")
     }
 
     init(location: Location) {
@@ -132,6 +134,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         window.setContentSize(NSSize(width: 1000, height: 600))
         window.onFirstResponderChange = { [weak self] responder in self?.firstResponderChanged(responder) }
         updateWindowChrome()
+        NotificationCenter.default.addObserver(self, selector: #selector(updateAvailabilityChanged), name: Updater.availabilityChanged, object: nil)
+        updateAvailabilityChanged()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -245,13 +249,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.sidebarTrackingSeparator, ToolbarID.nav, .flexibleSpace, ToolbarID.view, ToolbarID.group, .space, ToolbarID.newFolder, ToolbarID.action, ToolbarID.search]
+        [.sidebarTrackingSeparator, ToolbarID.nav, .flexibleSpace, ToolbarID.view, ToolbarID.group, .space, ToolbarID.newFolder, ToolbarID.action, ToolbarID.update, ToolbarID.search]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.sidebarTrackingSeparator, ToolbarID.nav, ToolbarID.view, ToolbarID.group, ToolbarID.newFolder, ToolbarID.action, ToolbarID.search,
          ToolbarID.share, ToolbarID.delete, ToolbarID.info, ToolbarID.connect, ToolbarID.split, ToolbarID.quickLook, ToolbarID.terminal,
-         .flexibleSpace, .space]
+         ToolbarID.update, .flexibleSpace, .space]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
@@ -336,6 +340,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             return button(id, symbol: "eye", label: "Quick Look", tip: "Quick Look the selected items", action: #selector(togglePreviewPanel(_:)))
         case ToolbarID.terminal:
             return button(id, symbol: "apple.terminal", label: "Terminal", tip: "Open the folder in Terminal", action: #selector(PaneViewController.openInTerminal(_:)))
+        case ToolbarID.update:
+            let item = button(id, symbol: "arrow.down.circle", label: "Update", tip: "Update Scout", action: #selector(AppDelegate.checkForUpdates(_:)))
+            item.image = item.image?.withSymbolConfiguration(.init(paletteColors: [.controlAccentColor]))
+            updateItem = item
+            refreshUpdateItem()
+            return item
         default:
             return nil
         }
@@ -350,6 +360,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         item.action = action
         item.isBordered = true
         return item
+    }
+
+    /// The Update button stays hidden until Sparkle finds an update. Toolbars saved before it existed don't have it,
+    /// so it's added then (toolbars sharing an identifier stay in sync, so adding it to one adds it everywhere).
+    @objc private func updateAvailabilityChanged() {
+        if Updater.shared.availableVersion != nil, let toolbar = window?.toolbar,
+           !toolbar.items.contains(where: { $0.itemIdentifier == ToolbarID.update }) {
+            let index = toolbar.items.firstIndex { $0.itemIdentifier == ToolbarID.search } ?? toolbar.items.count
+            toolbar.insertItem(withItemIdentifier: ToolbarID.update, at: index)
+        }
+        refreshUpdateItem()
+    }
+
+    private func refreshUpdateItem() {
+        let version = Updater.shared.availableVersion
+        updateItem?.isHidden = version == nil
+        updateItem?.toolTip = version.map { "Scout \($0) is available. Click to update." }
     }
 
     @objc private func navClicked(_ sender: NSToolbarItemGroup) {

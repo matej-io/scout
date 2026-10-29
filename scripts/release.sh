@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Builds Scout for Apple silicon, signs it with Developer ID, notarizes it,
-# packages it into a DMG and (optionally) publishes a GitHub release.
+# packages it into a DMG, writes the Sparkle appcast and (optionally) publishes a GitHub release.
 #
 # Usage:
 #   scripts/release.sh [version] [--publish] [--no-notarize]
@@ -9,7 +9,7 @@
 #   --publish      Create a GitHub release "v<version>" with the DMG attached (uses gh)
 #   --no-notarize  Skip notarization (the app will only run on this Mac without Gatekeeper warnings)
 #
-# Optional: RELEASE_NOTES="..." adds a "What's new" section to the GitHub release.
+# Optional: RELEASE_NOTES="..." adds a "What's new" section to the GitHub release and the in-app update window.
 #
 # Signing uses the Xcode account for team $TEAM_ID with automatic signing
 # (-allowProvisioningUpdates), so no certificates or passwords are needed in this script.
@@ -23,12 +23,13 @@ usage() {
 Usage: scripts/release.sh [version] [--publish] [--no-notarize]
 
 Builds Scout for Apple silicon, signs it with Developer ID, notarizes it and
-packages it as build/release/Scout-<version>-arm64.dmg.
+packages it as build/release/Scout-<version>-arm64.dmg, plus build/release/appcast.xml
+for the in-app updater (Sparkle).
 
 Arguments:
   version        The version to release, e.g. 1.2.0. If omitted, the script uses
                  MARKETING_VERSION from the Xcode project.
-  --publish      Also create the GitHub release v<version> with the DMG attached.
+  --publish      Also create the GitHub release v<version> with the DMG and appcast.xml attached.
                  The current commit is pushed first and the tag is created on it.
   --no-notarize  Skip notarization (Gatekeeper will warn on other Macs).
   -h, --help     Show this help.
@@ -38,7 +39,15 @@ The version sets:
   - the DMG name: Scout-<version>-arm64.dmg
   - the GitHub release: tag v<version>, titled "Scout <version>"
 The build number is set automatically to the number of commits
-(git rev-list --count HEAD), so each release gets a higher one.
+(git rev-list --count HEAD), so each release gets a higher one. The in-app updater
+compares build numbers, so release from a commit that comes after the last release.
+
+In-app updates:
+  Scout checks https://github.com/matej-io/scout/releases/latest/download/appcast.xml
+  once a day, so the newest published release's appcast.xml is what users see. The DMG is
+  signed with the Sparkle EdDSA key from your login Keychain (created once with
+  build/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys; back it up with
+  generate_keys -x). Without that key, updates can't be published.
 
 Good to know:
   - The version argument doesn't change the project file. Releasing 1.2.0 still
@@ -49,12 +58,14 @@ Good to know:
     failing. That's handy for fixing a broken build, but easy to do by accident.
 
 Environment:
-  RELEASE_NOTES="..."   Adds a "What's new" section to the GitHub release.
+  RELEASE_NOTES="..."   Adds a "What's new" section (Markdown) to the GitHub release and
+                        the in-app update window.
   TEAM_ID               Developer team (default 6H56BMGV4C, ZEN PLUS LTD).
   ASC_KEY_PATH, ASC_KEY_ID, ASC_ISSUER_ID
                         Use an App Store Connect API key instead of the Xcode account (CI).
   NOTARY_PROFILE        notarytool keychain profile; also notarizes the DMG itself
                         when a local Developer ID certificate is available.
+  SPARKLE_KEY_FILE      Sparkle private key file to sign the update with, instead of the Keychain (CI).
 
 Examples:
   scripts/release.sh 1.2.0
@@ -83,6 +94,8 @@ if [[ -z "$VERSION" ]]; then
 fi
 BUILD_NUMBER=$(git rev-list --count HEAD)
 OUT=build/release
+PACKAGES=build/SourcePackages
+REPO=matej-io/scout
 ARCHIVE=$OUT/$APP.xcarchive
 EXPORT=$OUT/export
 DMG=$OUT/$APP-$VERSION-arm64.dmg
@@ -100,7 +113,7 @@ mkdir -p $OUT
 step "Archiving $APP $VERSION ($BUILD_NUMBER) for arm64"
 xcodebuild archive \
   -project $APP.xcodeproj -scheme $APP -configuration Release \
-  -destination 'generic/platform=macOS' -archivePath $ARCHIVE \
+  -destination 'generic/platform=macOS' -archivePath $ARCHIVE -clonedSourcePackagesDirPath $PACKAGES \
   ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
   MARKETING_VERSION=$VERSION CURRENT_PROJECT_VERSION=$BUILD_NUMBER \
   DEVELOPMENT_TEAM=$TEAM_ID CODE_SIGN_STYLE=Automatic \
@@ -181,6 +194,34 @@ fi
 shasum -a 256 $DMG | tee $DMG.sha256
 ls -lh $DMG
 
+# The appcast describes only this release: the app reads it from the latest GitHub release,
+# and Sparkle needs nothing older than the newest version.
+step "Writing the Sparkle appcast"
+SIGN_ARGS=()
+[[ -n "${SPARKLE_KEY_FILE:-}" ]] && SIGN_ARGS=(--ed-key-file "$SPARKLE_KEY_FILE")
+SIGNATURE=$($PACKAGES/artifacts/sparkle/Sparkle/bin/sign_update "${SIGN_ARGS[@]}" $DMG)
+{
+  echo '<?xml version="1.0" encoding="utf-8"?>'
+  echo '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">'
+  echo '  <channel>'
+  echo "    <title>$APP</title>"
+  echo '    <item>'
+  echo "      <title>$APP $VERSION</title>"
+  echo "      <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>"
+  echo "      <sparkle:version>$BUILD_NUMBER</sparkle:version>"
+  echo "      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>"
+  echo '      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>'
+  echo '      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>'
+  if [[ -n "${RELEASE_NOTES:-}" ]]; then
+    echo "      <description sparkle:descriptionFormat=\"markdown\"><![CDATA[$RELEASE_NOTES]]></description>"
+  fi
+  echo "      <enclosure url=\"https://github.com/$REPO/releases/download/v$VERSION/$(basename $DMG)\" type=\"application/octet-stream\" $SIGNATURE/>"
+  echo '    </item>'
+  echo '  </channel>'
+  echo '</rss>'
+} > $OUT/appcast.xml
+xmllint --noout $OUT/appcast.xml
+
 if (( PUBLISH )); then
   TAG=v$VERSION
   step "Publishing GitHub release $TAG"
@@ -202,10 +243,10 @@ if (( PUBLISH )); then
     echo "SHA-256: \`$(cut -d' ' -f1 $DMG.sha256)\`"
   } > $NOTES
   if gh release view $TAG >/dev/null 2>&1; then
-    gh release upload $TAG $DMG --clobber
+    gh release upload $TAG $DMG $OUT/appcast.xml --clobber
   else
     git push origin HEAD
-    gh release create $TAG $DMG --title "Scout $VERSION" --notes-file $NOTES --target "$(git rev-parse HEAD)"
+    gh release create $TAG $DMG $OUT/appcast.xml --title "Scout $VERSION" --notes-file $NOTES --target "$(git rev-parse HEAD)"
   fi
   gh release view $TAG --json url --jq .url
 fi

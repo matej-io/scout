@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>SUFeedURL</key>
+	<string>https://github.com/matej-io/scout/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>Y+NF9Fx5esuzAq4CbZMrSxkoY/W5LmIgzBUdLLnuC5Y=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_smb._tcp</string>
