@@ -1,0 +1,52 @@
+#!/bin/sh
+# Opens folders in Scout, like VS Code's `code`. Installed by Scout › Install ‘scout’ Command…,
+# which links /usr/local/bin/scout to this file inside Scout.app.
+
+usage() {
+  cat <<'USAGE'
+Usage: scout [path ...]
+
+Shows each path in Scout's front window, bringing it to the front.
+The first path opens in the window itself and any others in new tabs.
+A path to a file opens its folder with the file selected.
+With no path, Scout just comes to the front.
+
+Examples:
+  scout .
+  scout ~/Downloads
+  scout ~/Projects/app ~/Desktop
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+# Resolve the link to find the app this script belongs to (…/Scout.app/Contents/Resources/scout).
+self=$(realpath "$0" 2>/dev/null) || self=$0
+app=${self%/Contents/Resources/*}
+case "$app" in
+  *.app) ;;
+  *) app=Scout ;;
+esac
+
+status=0
+count=$#
+for arg; do
+  shift
+  [ "$arg" = "--" ] && continue
+  if [ ! -e "$arg" ]; then
+    echo "scout: $arg: No such file or directory" >&2
+    status=1
+    continue
+  fi
+  case "$arg" in
+    /*) set -- "$@" "$arg" ;;
+    *) set -- "$@" "$PWD/$arg" ;;
+  esac
+done
+
+if [ $# -gt 0 ] || [ $count -eq 0 ]; then
+  open -a "$app" "$@" || status=1
+fi
+exit $status

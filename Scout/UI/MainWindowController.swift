@@ -442,6 +442,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         controller.showWindow(nil)
     }
 
+    /// Shows a location in the active pane, as `scout <path>` does.
+    /// Forced when selecting, so the selection survives a window or tab that’s still loading.
+    func show(_ location: Location, select: [ItemRef]) {
+        activePane.navigate(to: location, select: select, force: !select.isEmpty)
+        activePane.focus()
+    }
+
     func reveal(_ ref: ItemRef) {
         guard let parent = ref.parent else { return }
         activePane.navigate(to: .folder(parent), select: [ref])

@@ -33,6 +33,19 @@ In an SSH folder, the scopes are the **server** and the **current folder**. Scou
 - **⌥⌫** or **⌃W** deletes the last path component, and **⌃U** clears the field.
 - Pasted paths with quotes, backslash escapes or `file://` are cleaned up. A path to a file opens its folder and selects the file.
 
+## The `scout` command
+
+Like VS Code's `code`, `scout` shows folders in Scout from a terminal. Choose **Scout › Install ‘scout’ Command…** to link it into `/usr/local/bin` (Scout asks for an administrator password if needed). The same menu item removes it again.
+
+```sh
+scout .                 # the current folder
+scout ~/Projects/app    # any folder
+scout notes.txt         # the file's folder, with the file selected
+scout ~/a ~/b           # the first in the window, the others in new tabs
+```
+
+Scout doesn't open a new window: the front window goes to the folder and comes to the front. With no path, `scout` just brings Scout to the front. If you move Scout.app, install the command again.
+
 ## SSH details
 
 - Listing, creating folders, renaming, duplicating and deleting all run on the server. Remote deletes are permanent, and Scout asks before deleting.

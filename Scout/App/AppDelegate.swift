@@ -4,6 +4,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     static var shared: AppDelegate { NSApp.delegate as! AppDelegate }
 
     private var controllers: [MainWindowController] = []
+    /// Paths from the `scout` command that arrived before the first window opened.
+    private var pendingURLs: [URL]? = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AskPass.install()
@@ -22,7 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func openFirstWindow() {
-        newWindow(nil)
+        let urls = pendingURLs ?? []
+        pendingURLs = nil
+        if urls.isEmpty { newWindow(nil) } else { show(urls) }
         NSApp.activate()
         if ProcessInfo.processInfo.environment["SCOUT_SPRINGTEST"] != nil { SelfTest.runSpring() }
         if let host = ProcessInfo.processInfo.environment["SCOUT_SELFTEST"] {
@@ -36,6 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { newWindow(nil) }
         return true
+    }
+
+    /// Paths from the `scout` command.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if pendingURLs != nil { pendingURLs! += urls } else { show(urls) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -82,6 +91,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller.showWindow(nil)
     }
 
+    /// Shows the first URL in the front window (opening one if there’s none) and the others in new tabs.
+    /// A file’s folder opens with the file selected.
+    private func show(_ urls: [URL]) {
+        let targets = urls.map { url -> (Location, [ItemRef]) in
+            let url = url.standardizedFileURL
+            let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? true
+            return isFolder ? (.folder(.local(url)), []) : (.folder(.local(url.deletingLastPathComponent())), [.local(url)])
+        }
+        guard let (location, select) = targets.first else { return }
+        let front = NSApp.orderedWindows.lazy.compactMap { $0.windowController as? MainWindowController }.first
+        let controller: MainWindowController
+        if let front {
+            controller = front
+            controller.show(location, select: select)
+        } else {
+            controller = makeWindowController(location: location)
+            if controllers.count == 1 {
+                controller.window?.setFrameAutosaveName("ScoutMainWindow")
+                if controller.window?.frame.origin == .zero { controller.window?.center() }
+            }
+            controller.showWindow(nil)
+            if !select.isEmpty { controller.show(location, select: select) }
+        }
+        for (location, select) in targets.dropFirst() {
+            controller.openInNewTab(location)
+            if !select.isEmpty, let tab = controllers.last { tab.show(location, select: select) }
+        }
+        if let window = controller.window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate()
+    }
+
     func windowClosed(_ controller: MainWindowController) {
         controllers.removeAll { $0 === controller }
     }
@@ -111,6 +154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if FullDiskAccess.isGranted { FullDiskAccess.openSettings() } else { FullDiskAccessController.present() }
     }
 
+    @objc func toggleCommandLineTool(_ sender: Any?) {
+        CommandLineTool.toggle()
+    }
+
     @objc func checkForUpdates(_ sender: Any?) {
         Updater.shared.checkForUpdates()
     }
@@ -123,6 +170,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if menuItem.action == #selector(checkForUpdates(_:)) {
             menuItem.title = Updater.shared.availableVersion.map { "Update to Scout \($0)…" } ?? "Check for Updates…"
             return Updater.shared.canCheckForUpdates
+        }
+        if menuItem.action == #selector(toggleCommandLineTool(_:)) {
+            menuItem.title = CommandLineTool.isInstalled ? "Uninstall ‘scout’ Command" : "Install ‘scout’ Command…"
         }
         return true
     }
@@ -169,6 +219,7 @@ enum MainMenu {
         menu.addItem(item("Settings…", #selector(AppDelegate.showSettings(_:)), ","))
         menu.addItem(item("Reload Configuration", #selector(AppDelegate.reloadConfig(_:)), ",", [.command, .shift]))
         menu.addItem(item("Full Disk Access…", #selector(AppDelegate.showFullDiskAccess(_:))))
+        menu.addItem(item("Install ‘scout’ Command…", #selector(AppDelegate.toggleCommandLineTool(_:))))
         menu.addItem(.separator())
         menu.addItem(item("Empty \(Prefs.trashTitle)…", #selector(AppDelegate.emptyTrash(_:)), "\u{8}", [.command, .shift]))
         menu.addItem(.separator())
