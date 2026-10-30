@@ -108,7 +108,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
             indicator.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
             indicator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             indicator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            indicator.heightAnchor.constraint(equalToConstant: 2),
+            indicator.heightAnchor.constraint(equalToConstant: 1),
 
             messageView.centerXAnchor.constraint(equalTo: contentContainer.centerXAnchor),
             messageView.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
