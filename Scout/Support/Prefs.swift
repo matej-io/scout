@@ -17,7 +17,7 @@ enum ViewMode: Int, CaseIterable {
         case .icon: return "square.grid.2x2"
         case .list: return "list.bullet"
         case .column: return "rectangle.split.3x1"
-        case .gallery: return "rectangle.bottomhalf.inset.filled"
+        case .gallery: return "squares.below.rectangle"
         }
     }
 

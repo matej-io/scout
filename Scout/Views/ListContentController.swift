@@ -407,6 +407,24 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         return DragSupport.writer(for: item)
     }
 
+    /// Like Finder, drag just the icon and name (on a tinted pill) rather than the whole row with every column.
+    func outlineView(_ outlineView: NSOutlineView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forItems draggedItems: [Any]) {
+        let column = outlineView.column(withIdentifier: .init("name"))
+        guard column >= 0 else { return }
+        session.enumerateDraggingItems(options: [], for: outlineView, classes: [NSPasteboardItem.self], searchOptions: [:]) { [weak self] draggingItem, _, _ in
+            guard let self,
+                  let data = (draggingItem.item as? NSPasteboardItem)?.data(forType: .scoutRefs),
+                  let ref = (try? JSONDecoder().decode([ItemRef].self, from: data))?.first,
+                  let item = self.findItem(ref) else { return }
+            let row = outlineView.row(forItem: item)
+            guard row >= 0, let cell = outlineView.view(atColumn: column, row: row, makeIfNecessary: true) as? NameCellView else { return }
+            cell.layoutSubtreeIfNeeded()
+            let components = cell.draggingImageComponents
+            draggingItem.draggingFrame = outlineView.convert(cell.bounds, from: cell)
+            draggingItem.imageComponentsProvider = { components }
+        }
+    }
+
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
         isDragging = true
         if let folder = item as? FileItem, folder.isBrowsable {
@@ -514,6 +532,48 @@ final class NameCellView: NSTableCellView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Finder's drag image: the icon, and the name in white on an accent-coloured rounded pill.
+    override var draggingImageComponents: [NSDraggingImageComponent] {
+        var components: [NSDraggingImageComponent] = []
+        if let image = icon.image {
+            let component = NSDraggingImageComponent(key: .icon)
+            component.contents = image
+            component.frame = icon.frame
+            components.append(component)
+        }
+        let font = label.font ?? .systemFont(ofSize: NSFont.systemFontSize)
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingMiddle
+        let text = NSAttributedString(string: label.stringValue, attributes: [
+            .font: font, .foregroundColor: NSColor.white, .paragraphStyle: style,
+        ])
+        // The label's cell insets its text by 2pt on each side.
+        let textSize = text.size()
+        let textWidth = ceil(min(textSize.width, label.frame.width - 4))
+        guard textWidth > 0 else { return components }
+        let padding = NSSize(width: 4, height: 1)
+        let pill = NSRect(x: label.frame.minX + 2 - padding.width,
+                          y: (label.frame.midY - ceil(textSize.height) / 2 - padding.height).rounded(),
+                          width: textWidth + padding.width * 2,
+                          height: ceil(textSize.height) + padding.height * 2)
+        var tint = NSColor.controlAccentColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            tint = NSColor.selectedContentBackgroundColor.usingColorSpace(.sRGB) ?? tint
+        }
+        let image = NSImage(size: pill.size, flipped: false) { rect in
+            tint.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
+            text.draw(with: NSRect(x: padding.width, y: padding.height, width: textWidth, height: ceil(textSize.height)),
+                      options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            return true
+        }
+        let component = NSDraggingImageComponent(key: .label)
+        component.contents = image
+        component.frame = pill
+        components.append(component)
+        return components
+    }
 
     func configure(_ item: FileItem, iconSize: CGFloat, font: NSFont, preview: Bool) {
         self.item = item
