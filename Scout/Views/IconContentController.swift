@@ -239,7 +239,8 @@ final class FileCollectionView: NSCollectionView {
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
-        super.draggingEnded(sender)
+        // draggingEnded(_:) is optional and not every AppKit view implements it; an unguarded super call throws.
+        if NSCollectionView.instancesRespond(to: #selector(draggingEnded(_:))) { super.draggingEnded(sender) }
         onDragExit?()
     }
     private var typeBuffer = ""

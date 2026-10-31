@@ -10,7 +10,8 @@ final class FileOutlineView: NSOutlineView {
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
-        super.draggingEnded(sender)
+        // draggingEnded(_:) is optional and NSOutlineView doesn't implement it; an unguarded super call throws.
+        if NSOutlineView.instancesRespond(to: #selector(draggingEnded(_:))) { super.draggingEnded(sender) }
         onDragExit?()
     }
 

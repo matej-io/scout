@@ -6,9 +6,8 @@ extension NSPasteboard.PasteboardType {
     static let scoutRefs = NSPasteboard.PasteboardType("io.matej.scout.refs")
 }
 
-/// Drag source for one item. Local files are plain file URLs, so they can be
-/// dropped anywhere. Remote files are file promises: dropping one on the
-/// Desktop or into another app downloads it over SSH.
+/// Drag source for a remote item: a file promise, so dropping it on the Desktop
+/// or into another app downloads it over SSH.
 final class ItemDragWriter: NSFilePromiseProvider {
     let ref: ItemRef
 
@@ -22,26 +21,17 @@ final class ItemDragWriter: NSFilePromiseProvider {
     }
 
     override func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
-        if case .local = ref { return [.scoutRefs, .fileURL, .string] }
-        return [.scoutRefs] + super.writableTypes(for: pasteboard)
+        [.scoutRefs] + super.writableTypes(for: pasteboard)
     }
 
     override func writingOptions(forType type: NSPasteboard.PasteboardType, pasteboard: NSPasteboard) -> NSPasteboard.WritingOptions {
-        if type == .scoutRefs || type == .fileURL || type == .string { return [] }
+        if type == .scoutRefs { return [] }
         return super.writingOptions(forType: type, pasteboard: pasteboard)
     }
 
     override func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
-        switch type {
-        case .scoutRefs:
-            return try? JSONEncoder().encode([ref])
-        case .fileURL:
-            return ref.localURL.map { ($0 as NSURL).pasteboardPropertyList(forType: .fileURL) } ?? nil
-        case .string:
-            return ref.path
-        default:
-            return super.pasteboardPropertyList(forType: type)
-        }
+        if type == .scoutRefs { return try? JSONEncoder().encode([ref]) }
+        return super.pasteboardPropertyList(forType: type)
     }
 }
 
@@ -74,10 +64,19 @@ final class PromiseDelegate: NSObject, NSFilePromiseProviderDelegate {
 enum DragSupport {
     static let types: [NSPasteboard.PasteboardType] = [.scoutRefs, .fileURL]
 
+    /// Local files are dragged as plain file URLs, like Finder does, so any app can take them.
     static func writer(for item: FileItem) -> NSPasteboardWriting? {
-        if case .local(let url) = item.ref, !url.isFileURL { return nil }
-        if case .remote(_, let path) = item.ref, path.isEmpty { return nil }
-        return ItemDragWriter(item: item, delegate: PromiseDelegate.shared)
+        switch item.ref {
+        case .local(let url):
+            guard url.isFileURL else { return nil }
+            let pbItem = NSPasteboardItem()
+            pbItem.setData((try? JSONEncoder().encode([item.ref])) ?? Data(), forType: .scoutRefs)
+            pbItem.setString(url.absoluteString, forType: .fileURL)
+            return pbItem
+        case .remote(_, let path):
+            guard !path.isEmpty else { return nil }
+            return ItemDragWriter(item: item, delegate: PromiseDelegate.shared)
+        }
     }
 
     static func refs(from pasteboard: NSPasteboard) -> [ItemRef] {
