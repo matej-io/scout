@@ -21,14 +21,19 @@ enum ViewMode: Int, CaseIterable {
         }
     }
 
-    init?(finderStyle: String) {
-        switch finderStyle {
-        case "icnv": self = .icon
-        case "Nlsv": self = .list
-        case "clmv": self = .column
-        case "glyv", "Flwv": self = .gallery
-        default: return nil
+    /// The name used in the config file and the View Options panel: icon, list, column or gallery.
+    var configName: String {
+        switch self {
+        case .icon: return "icon"
+        case .list: return "list"
+        case .column: return "column"
+        case .gallery: return "gallery"
         }
+    }
+
+    init?(configName: String) {
+        guard let mode = ViewMode.allCases.first(where: { $0.configName == configName }) else { return nil }
+        self = mode
     }
 }
 
@@ -68,14 +73,24 @@ final class Prefs {
             "showPathBar": finder?.object(forKey: "ShowPathbar") as? Bool ?? false,
             "showTags": finder?.object(forKey: "ShowRecentTags") as? Bool ?? true,
             "iconSize": 64.0,
-            "defaultViewMode": ViewMode.icon.rawValue,
+            "iconGridSpacing": 24.0,
+            "iconTextSize": 12.0,
+            "iconLabelsRight": false,
+            "iconShowInfo": false,
+            "iconShowPreview": true,
+            "listLargeIcons": false,
+            "listTextSize": 13.0,
+            "listRelativeDates": true,
+            "listShowPreview": true,
+            "columnTextSize": 13.0,
+            "columnShowIcons": true,
+            "columnShowPreview": true,
+            // Folders open as a list until they're switched to another view, which they then remember.
+            "defaultViewMode": ViewMode.list.rawValue,
             "foldersFirst": finder?.bool(forKey: "_FXSortFoldersFirst") ?? false,
             "searchScopeDefault": finder?.string(forKey: "FXDefaultSearchScope") ?? "SCev",
             "searchContents": true,
         ]
-        if let style = finder?.string(forKey: "FXPreferredViewStyle"), let mode = ViewMode(finderStyle: style) {
-            initial["defaultViewMode"] = mode.rawValue
-        }
         defaults.register(defaults: initial)
     }
 
@@ -87,6 +102,9 @@ final class Prefs {
                      "show-status-bar": "showStatusBar", "show-tags": "showTags", "show-recents": "showRecents"]
         for (key, pref) in bools {
             if let value = config.bool(key) { defaults.set(value, forKey: pref) }
+        }
+        if let view = config.string("default-view"), let mode = ViewMode(configName: view) {
+            defaults.set(mode.rawValue, forKey: "defaultViewMode")
         }
         if let scope = config.string("search-scope") {
             searchScopeDefault = ["this-mac": "SCev", "current-folder": "SCcf", "previous": "SCsp"][scope] ?? "SCev"
@@ -143,7 +161,86 @@ final class Prefs {
     }
 
     var defaultViewMode: ViewMode {
-        ViewMode(rawValue: defaults.integer(forKey: "defaultViewMode")) ?? .icon
+        get { ViewMode(rawValue: defaults.integer(forKey: "defaultViewMode")) ?? .list }
+        set { defaults.set(newValue.rawValue, forKey: "defaultViewMode") }
+    }
+
+    // MARK: View options (⌘J)
+
+    /// Posted when a View Options setting changes; the views redraw without relisting folders.
+    static let viewOptionsChanged = Notification.Name("ScoutViewOptionsChanged")
+
+    private func double(_ key: String) -> CGFloat { CGFloat(defaults.double(forKey: key)) }
+    private func setViewOption(_ value: Any, _ key: String) {
+        defaults.set(value, forKey: key)
+        NotificationCenter.default.post(name: Prefs.viewOptionsChanged, object: nil)
+    }
+
+    /// Extra room around each icon, in points on either side.
+    var iconGridSpacing: CGFloat {
+        get { double("iconGridSpacing") }
+        set { setViewOption(Double(newValue), "iconGridSpacing") }
+    }
+
+    var iconTextSize: CGFloat {
+        get { double("iconTextSize") }
+        set { setViewOption(Double(newValue), "iconTextSize") }
+    }
+
+    /// Finder's Label position: names under the icons (false) or beside them (true).
+    var iconLabelsRight: Bool {
+        get { defaults.bool(forKey: "iconLabelsRight") }
+        set { setViewOption(newValue, "iconLabelsRight") }
+    }
+
+    /// Shows item counts, image dimensions or sizes under the names.
+    var iconShowInfo: Bool {
+        get { defaults.bool(forKey: "iconShowInfo") }
+        set { setViewOption(newValue, "iconShowInfo") }
+    }
+
+    var iconShowPreview: Bool {
+        get { defaults.bool(forKey: "iconShowPreview") }
+        set { setViewOption(newValue, "iconShowPreview") }
+    }
+
+    var listLargeIcons: Bool {
+        get { defaults.bool(forKey: "listLargeIcons") }
+        set { setViewOption(newValue, "listLargeIcons") }
+    }
+
+    var listIconSize: CGFloat { listLargeIcons ? 32 : 16 }
+
+    var listTextSize: CGFloat {
+        get { double("listTextSize") }
+        set { setViewOption(Double(newValue), "listTextSize") }
+    }
+
+    /// “Today”, “Yesterday” instead of dates.
+    var listRelativeDates: Bool {
+        get { defaults.bool(forKey: "listRelativeDates") }
+        set { setViewOption(newValue, "listRelativeDates") }
+    }
+
+    var listShowPreview: Bool {
+        get { defaults.bool(forKey: "listShowPreview") }
+        set { setViewOption(newValue, "listShowPreview") }
+    }
+
+    var columnTextSize: CGFloat {
+        get { double("columnTextSize") }
+        set { setViewOption(Double(newValue), "columnTextSize") }
+    }
+
+    var columnShowIcons: Bool {
+        get { defaults.bool(forKey: "columnShowIcons") }
+        set { setViewOption(newValue, "columnShowIcons") }
+    }
+
+    /// The preview column shown after a selected file.
+    var columnShowPreview: Bool {
+        get { defaults.bool(forKey: "columnShowPreview") }
+        set { setViewOption(newValue, "columnShowPreview") }
     }
 
     func viewMode(for ref: ItemRef) -> ViewMode {
@@ -166,7 +263,17 @@ final class Prefs {
                 return (key, parts[1] == "a")
             }
         }
-        return (.name, true)
+        return defaultSort
+    }
+
+    /// The sort order for folders that haven't been given one (View Options › Use as Defaults).
+    var defaultSort: (key: SortKey, ascending: Bool) {
+        get {
+            let parts = (defaults.string(forKey: "defaultSort") ?? "").split(separator: ":")
+            if parts.count == 2, let key = SortKey(rawValue: String(parts[0])) { return (key, parts[1] == "a") }
+            return (.name, true)
+        }
+        set { defaults.set("\(newValue.key.rawValue):\(newValue.ascending ? "a" : "d")", forKey: "defaultSort") }
     }
 
     func setSort(_ key: SortKey, ascending: Bool, for ref: ItemRef) {

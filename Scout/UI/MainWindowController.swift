@@ -185,6 +185,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             field.stringValue = pane.searchQuery ?? ""
         }
         window.tab.title = pane.displayTitle
+        if window.isMainWindow { ViewOptionsController.shared.refresh() }
     }
 
     // MARK: PaneDelegate
@@ -549,6 +550,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         window?.makeFirstResponder(field)
     }
 
+    @objc func toggleViewOptions(_ sender: Any?) { ViewOptionsController.shared.toggle() }
     @objc func togglePathBar(_ sender: Any?) { Prefs.shared.showPathBar.toggle() }
     @objc func toggleStatusBar(_ sender: Any?) { Prefs.shared.showStatusBar.toggle() }
     @objc func toggleHiddenFiles(_ sender: Any?) { Prefs.shared.showHidden.toggle() }
@@ -569,6 +571,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             return true
         case #selector(switchPane(_:)):
             return isSplit
+        case #selector(toggleViewOptions(_:)):
+            item.title = ViewOptionsController.shared.isVisible ? "Hide View Options" : "Show View Options"
+            return true
         case #selector(togglePathBar(_:)):
             item.title = Prefs.shared.showPathBar ? "Hide Path Bar" : "Show Path Bar"
             return true

@@ -53,7 +53,7 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
         browser.columnResizingType = .userColumnResizing
         browser.minColumnWidth = 120
         browser.setDefaultColumnWidth(240)
-        browser.rowHeight = 22
+        browser.rowHeight = ColumnContentController.rowHeight
         browser.backgroundColor = .controlBackgroundColor
         browser.setCellClass(FileBrowserCell.self)
         browser.target = self
@@ -79,6 +79,13 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
     }
 
     var focusView: NSView { browser }
+
+    private static var rowHeight: CGFloat { max(22, (Prefs.shared.columnTextSize * 1.25).rounded() + 6) }
+
+    func viewOptionsChanged() {
+        browser.rowHeight = ColumnContentController.rowHeight
+        display(root.children ?? [], select: nil)
+    }
 
     // MARK: BrowserContent
 
@@ -177,8 +184,7 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
     }
 
     func browser(_ browser: NSBrowser, previewViewControllerForLeafItem item: Any) -> NSViewController? {
-        let controller = PreviewColumnController()
-        return controller
+        Prefs.shared.columnShowPreview ? PreviewColumnController() : nil
     }
 
     func browser(_ browser: NSBrowser, shouldEditItem item: Any?) -> Bool { false }
@@ -279,7 +285,7 @@ final class FileBrowserCell: NSBrowserCell {
             icon.size = NSSize(width: 16, height: 16)
             image = icon
             isLeaf = !fileItem.isBrowsable
-            font = .systemFont(ofSize: 13)
+            font = .systemFont(ofSize: Prefs.shared.columnTextSize)
         }
     }
 
@@ -288,7 +294,8 @@ final class FileBrowserCell: NSBrowserCell {
         let highlighted = isHighlighted
         let emphasized = backgroundStyle == .emphasized
         var x = cellFrame.minX + 8
-        if let image {
+        let fontSize = Prefs.shared.columnTextSize
+        if let image, Prefs.shared.columnShowIcons {
             let r = NSRect(x: x, y: cellFrame.midY - 8, width: 16, height: 16)
             image.draw(in: r, from: .zero, operation: .sourceOver, fraction: item.isHidden ? 0.5 : 1, respectFlipped: true, hints: nil)
             x += 22
@@ -297,10 +304,12 @@ final class FileBrowserCell: NSBrowserCell {
         if highlighted && emphasized { color = .alternateSelectedControlTextColor }
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byTruncatingMiddle
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: color, .paragraphStyle: style]
+        let font = NSFont.systemFont(ofSize: fontSize)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: style]
         let text = item.displayName as NSString
         let chevronWidth: CGFloat = item.isBrowsable ? 22 : 0
-        let textRect = NSRect(x: x, y: cellFrame.midY - 8.5, width: cellFrame.maxX - x - chevronWidth - 6, height: 17)
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let textRect = NSRect(x: x, y: cellFrame.midY - lineHeight / 2, width: cellFrame.maxX - x - chevronWidth - 6, height: lineHeight)
         text.draw(in: textRect, withAttributes: attrs)
     }
 }

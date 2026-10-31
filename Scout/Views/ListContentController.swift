@@ -56,7 +56,7 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         self?.pane?.springOpen(.folder(ref))
     })
 
-    private struct Column {
+    struct Column {
         let id: String
         let title: String
         let width: CGFloat
@@ -64,7 +64,7 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         let alignment: NSTextAlignment
     }
 
-    private static let columns: [Column] = [
+    static let columns: [Column] = [
         Column(id: "name", title: "Name", width: 280, sortKey: .name, alignment: .left),
         Column(id: "modified", title: "Date Modified", width: 180, sortKey: .modified, alignment: .left),
         Column(id: "created", title: "Date Created", width: 180, sortKey: .created, alignment: .left),
@@ -87,9 +87,16 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         }
     }
 
-    private static var visibleColumns: Set<String> {
+    static var visibleColumns: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: "listColumns") ?? ["name", "modified", "size", "kind"]) }
-        set { UserDefaults.standard.set(Array(newValue), forKey: "listColumns") }
+        set {
+            UserDefaults.standard.set(Array(newValue), forKey: "listColumns")
+            NotificationCenter.default.post(name: Prefs.viewOptionsChanged, object: nil)
+        }
+    }
+
+    private static var rowHeight: CGFloat {
+        max(Prefs.shared.listIconSize + 4, (Prefs.shared.listTextSize * 1.25).rounded() + 4)
     }
 
     override func loadView() {
@@ -112,7 +119,7 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         outline.allowsColumnReordering = true
         outline.allowsTypeSelect = true
         outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        outline.rowHeight = 20
+        outline.rowHeight = ListContentController.rowHeight
         outline.intercellSpacing = NSSize(width: 3, height: 0)
         outline.indentationPerLevel = 16
         outline.autoresizesOutlineColumn = false
@@ -303,23 +310,25 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         let id = column.identifier.rawValue
         if id == "name" {
             let cell = outlineView.makeView(withIdentifier: column.identifier, owner: self) as? NameCellView ?? NameCellView(identifier: column.identifier)
-            cell.configure(item)
+            cell.configure(item, iconSize: Prefs.shared.listIconSize, font: .systemFont(ofSize: Prefs.shared.listTextSize),
+                           preview: Prefs.shared.listShowPreview)
             cell.textField?.delegate = self
             return cell
         }
         let cell = outlineView.makeView(withIdentifier: column.identifier, owner: self) as? TextCellView ?? TextCellView(identifier: column.identifier)
         let text: String
         switch id {
-        case "modified": text = Fmt.dateString(item.modified)
-        case "created": text = Fmt.dateString(item.created)
-        case "lastOpened": text = Fmt.dateString(item.lastOpened)
-        case "added": text = Fmt.dateString(item.added)
+        case "modified": text = Fmt.dateString(item.modified, relative: Prefs.shared.listRelativeDates)
+        case "created": text = Fmt.dateString(item.created, relative: Prefs.shared.listRelativeDates)
+        case "lastOpened": text = Fmt.dateString(item.lastOpened, relative: Prefs.shared.listRelativeDates)
+        case "added": text = Fmt.dateString(item.added, relative: Prefs.shared.listRelativeDates)
         case "size": text = item.isBrowsable ? "--" : Fmt.size(item.size)
         case "kind": text = item.kind
         case "tags": text = item.tags.joined(separator: ", ")
         default: text = ""
         }
-        cell.configure(text, alignment: id == "size" ? .right : .left, dimmed: item.isHidden)
+        cell.configure(text, alignment: id == "size" ? .right : .left, dimmed: item.isHidden,
+                       font: .systemFont(ofSize: Prefs.shared.listTextSize))
         return cell
     }
 
@@ -441,7 +450,16 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         var visible = ListContentController.visibleColumns
         if visible.contains(id) { visible.remove(id) } else { visible.insert(id) }
         ListContentController.visibleColumns = visible
-        column.isHidden = !visible.contains(id)
+    }
+
+    func viewOptionsChanged() {
+        let visible = ListContentController.visibleColumns
+        for column in outline.tableColumns where column.identifier.rawValue != "name" {
+            column.isHidden = !visible.contains(column.identifier.rawValue)
+        }
+        outline.rowHeight = ListContentController.rowHeight
+        display(items, select: selectedItems.map(\.ref))
+        view.needsLayout = true
     }
 }
 
@@ -461,6 +479,9 @@ final class NameCellView: NSTableCellView {
     private let icon = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private let tags = NSStackView()
+    private var item: FileItem?
+    private lazy var iconWidth = icon.widthAnchor.constraint(equalToConstant: 16)
+    private lazy var iconHeight = icon.heightAnchor.constraint(equalToConstant: 16)
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -482,8 +503,8 @@ final class NameCellView: NSTableCellView {
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 1),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 16),
-            icon.heightAnchor.constraint(equalToConstant: 16),
+            iconWidth,
+            iconHeight,
             label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             tags.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
@@ -494,9 +515,20 @@ final class NameCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(_ item: FileItem) {
+    func configure(_ item: FileItem, iconSize: CGFloat, font: NSFont, preview: Bool) {
+        self.item = item
+        iconWidth.constant = iconSize
+        iconHeight.constant = iconSize
         icon.image = item.icon
         icon.alphaValue = item.isHidden ? 0.5 : 1
+        if preview {
+            let ref = item.ref
+            Thumbnails.shared.thumbnail(for: item, size: iconSize) { [weak self] image in
+                guard self?.item?.ref == ref else { return }
+                self?.icon.image = image
+            }
+        }
+        label.font = font
         label.stringValue = item.displayName
         isHiddenItem = item.isHidden
         label.textColor = item.isHidden ? NSColor.hiddenItemText(for: self) : .labelColor
@@ -544,7 +576,8 @@ final class TextCellView: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(_ text: String, alignment: NSTextAlignment, dimmed: Bool) {
+    func configure(_ text: String, alignment: NSTextAlignment, dimmed: Bool, font: NSFont) {
+        label.font = font
         label.stringValue = text
         label.alignment = alignment
         self.dimmed = dimmed
