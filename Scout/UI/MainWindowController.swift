@@ -671,6 +671,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     func windowDidBecomeKey(_ notification: Notification) {
         sidebar.syncSelection()
     }
+
+    /// The title’s path menu (⌘-click or right-click) opens folders in Finder by default;
+    /// retarget it to navigate here. Its items run from the folder up to its volume, then the computer.
+    func window(_ window: NSWindow, shouldPopUpDocumentPathMenu menu: NSMenu) -> Bool {
+        guard let url = window.representedURL else { return true }
+        var chain: [URL] = []
+        var current = url.standardizedFileURL
+        while true {
+            chain.append(current)
+            let isVolume = (try? current.resourceValues(forKeys: [.isVolumeKey]))?.isVolume ?? false
+            let parent = current.deletingLastPathComponent()
+            if isVolume || current.path == "/" || parent.path == current.path { break }
+            current = parent
+        }
+        for (index, item) in menu.items.enumerated() where !item.isSeparatorItem {
+            let location: Location = index < chain.count ? .folder(.local(chain[index])) : .computer
+            item.representedObject = location
+            item.target = self
+            item.action = #selector(goToPathMenuLocation(_:))
+        }
+        return true
+    }
+
+    @objc private func goToPathMenuLocation(_ sender: NSMenuItem) {
+        guard let location = sender.representedObject as? Location else { return }
+        activePane.navigate(to: location)
+        activePane.focus()
+    }
 }
 
 /// Supplies the share toolbar item with the selected files.
