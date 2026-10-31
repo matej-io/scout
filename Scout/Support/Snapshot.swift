@@ -3,7 +3,7 @@ import AppKit
 /// Debug helper for screenshots without screen-recording permission:
 /// SCOUT_SNAPSHOT=/path.png renders the first window into a PNG after launch.
 /// Optional: SCOUT_START=/path or ssh:host:/path, SCOUT_VIEW=0-3, SCOUT_SPLIT=1, SCOUT_APPEARANCE=dark|light,
-/// SCOUT_SNAPSHOT_DELAY=seconds, SCOUT_SNAPSHOT_QUIT=1.
+/// SCOUT_SNAPSHOT_DELAY=seconds, SCOUT_SNAPSHOT_QUIT=1, SCOUT_VIEW_OPTIONS=1 (also renders the ⌘J panel to -options.png).
 enum Snapshot {
     static var env: [String: String] { ProcessInfo.processInfo.environment }
 
@@ -48,6 +48,9 @@ enum Snapshot {
                 if !text.isEmpty { GoToFolderController.debugType(text) }
             }
         }
+        if env["SCOUT_VIEW_OPTIONS"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ViewOptionsController.shared.toggle() }
+        }
         if env["SCOUT_SPLIT"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { controller.toggleSplit(nil) }
         }
@@ -57,6 +60,11 @@ enum Snapshot {
                let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                 view.cacheDisplay(in: view.bounds, to: rep)
                 try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-sheet.png")))
+            }
+            if env["SCOUT_VIEW_OPTIONS"] == "1", let panel = NSApp.windows.first(where: { $0 is NSPanel && $0.title != "" }),
+               let view = panel.contentView?.superview ?? panel.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-options.png")))
             }
             if env["SCOUT_SNAPSHOT_QUIT"] == "1" { exit(0) }
         }

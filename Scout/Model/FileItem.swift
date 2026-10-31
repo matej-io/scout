@@ -198,9 +198,17 @@ enum Fmt {
         return bytes.string(fromByteCount: value)
     }
 
-    static func dateString(_ date: Date?) -> String {
+    static let absoluteDate: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    /// `relative` gives “Today, 09:41” rather than the date (View Options › Use relative dates).
+    static func dateString(_ date: Date?, relative: Bool = true) -> String {
         guard let date else { return "--" }
-        return Fmt.date.string(from: date)
+        return (relative ? Fmt.date : Fmt.absoluteDate).string(from: date)
     }
 
     /// Finder shows free space with up to two decimals: “509.48 GB”, “507.7 GB”.

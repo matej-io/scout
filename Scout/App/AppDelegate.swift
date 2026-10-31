@@ -297,6 +297,7 @@ enum MainMenu {
         }
         sort.submenu = sortMenu
         menu.addItem(sort)
+        menu.addItem(item("Show View Options", #selector(MainWindowController.toggleViewOptions(_:)), "j"))
         menu.addItem(.separator())
         menu.addItem(item("Split View", #selector(MainWindowController.toggleSplit(_:)), "s"))
         menu.addItem(item("Switch to Other Pane", #selector(MainWindowController.switchPane(_:)), "\t", [.option]))

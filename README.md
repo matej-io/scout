@@ -7,7 +7,8 @@ A native macOS clone of Finder, built with AppKit, that adds two things Finder d
 
 ## Finder features
 
-- Icon, List, Column and Gallery views (⌘1–⌘4), remembered per folder
+- Icon, List, Column and Gallery views (⌘1–⌘4), remembered per folder. New folders open as a list (`default-view` in the [configuration file](#configuration) changes that)
+- View Options (⌘J): icon size, grid spacing, text size, label position, item info and icon previews; list icon size, text size, columns and relative dates; column text size, icons and preview column; sort order, and Use as Defaults
 - Sidebar with Favourites (drag folders in, drag them out to remove), Locations, SSH hosts and Tags
 - Back/forward history, enclosing folder (⌘↑), Go menu shortcuts
 - Sortable list columns with disclosure triangles (choose columns by right-clicking the header)
@@ -64,6 +65,7 @@ Scout has no settings window. Like Ghostty, it reads a text file, `~/.config/io.
 
 ```ini
 show-hidden-files = true
+default-view = list             # icon, list, column or gallery
 search-scope = current-folder   # this-mac, current-folder or previous
 terminal = ghostty
 ```

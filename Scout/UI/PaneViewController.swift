@@ -129,6 +129,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         nc.addObserver(self, selector: #selector(windowKeyChanged), name: NSWindow.didBecomeKeyNotification, object: nil)
         nc.addObserver(self, selector: #selector(windowKeyChanged), name: NSWindow.didResignKeyNotification, object: nil)
         nc.addObserver(self, selector: #selector(otherPaneIconSize(_:)), name: PaneViewController.iconSizeChanged, object: nil)
+        nc.addObserver(self, selector: #selector(viewOptionsChanged), name: Prefs.viewOptionsChanged, object: nil)
     }
 
     static let iconSizeChanged = Notification.Name("ScoutIconSizeChanged")
@@ -483,6 +484,14 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         guard (note.object as AnyObject?) !== self else { return }
         statusBar.iconSize = Prefs.shared.iconSize
         if viewMode == .icon { content.iconSizeChanged() }
+    }
+
+    @objc private func viewOptionsChanged() { content.viewOptionsChanged() }
+
+    /// View Options › Use as Defaults: folders without their own settings open like this one.
+    func useAsDefaults() {
+        Prefs.shared.defaultViewMode = viewMode
+        Prefs.shared.defaultSort = (sortKey, ascending)
     }
 
     // MARK: Search

@@ -21,6 +21,7 @@ final class Config {
         "show-status-bar": .bool,
         "show-tags": .bool,
         "show-recents": .bool,
+        "default-view": .choice(["icon", "list", "column", "gallery"]),
         "search-scope": .choice(["this-mac", "current-folder", "previous"]),
         "auto-update": .bool,
         "terminal": .text,
@@ -140,6 +141,10 @@ final class Config {
     # show-status-bar = true
     # show-tags = true
     # show-recents = true
+
+    # How folders open until you pick a view for them: icon, list, column or gallery.
+    # Each folder remembers the view you last used in it.
+    # default-view = list
 
     # Where a new search looks: this-mac, current-folder or previous
     # search-scope = this-mac

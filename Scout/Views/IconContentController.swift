@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// Finder’s icon view.
 final class IconContentController: NSViewController, BrowserContent, NSCollectionViewDataSource, NSCollectionViewDelegate, NSTextFieldDelegate {
@@ -48,17 +49,20 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
     var focusView: NSView { collection }
 
     private func updateItemSize() {
-        let s = Prefs.shared.iconSize
-        let width = max(s + 48, 100)
-        let height = s + 52
-        layout.itemSize = NSSize(width: width, height: height)
+        let metrics = IconMetrics.current
+        layout.itemSize = metrics.itemSize
+        layout.minimumLineSpacing = metrics.lineSpacing
     }
 
     func iconSizeChanged() {
         updateItemSize()
         layout.invalidateLayout()
+        let selection = collection.selectionIndexPaths
         collection.reloadData()
+        collection.selectionIndexPaths = selection
     }
+
+    func viewOptionsChanged() { iconSizeChanged() }
 
     // MARK: BrowserContent
 
@@ -97,7 +101,7 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
 
     func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
         let cell = collectionView.makeItem(withIdentifier: IconItem.id, for: indexPath) as! IconItem
-        cell.configure(items[indexPath.item], iconSize: Prefs.shared.iconSize, collection: collection)
+        cell.configure(items[indexPath.item], metrics: IconMetrics.current, collection: collection)
         return cell
     }
 
@@ -239,7 +243,8 @@ final class FileCollectionView: NSCollectionView {
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
-        super.draggingEnded(sender)
+        // draggingEnded(_:) is optional and not every AppKit view implements it; an unguarded super call throws.
+        if NSCollectionView.instancesRespond(to: #selector(draggingEnded(_:))) { super.draggingEnded(sender) }
         onDragExit?()
     }
     private var typeBuffer = ""
@@ -311,9 +316,10 @@ final class IconItem: NSCollectionViewItem {
     private let iconBackground = NSView()
     private let icon = NSImageView()
     let label = NSTextField(wrappingLabelWithString: "")
+    private let infoLabel = NSTextField(labelWithString: "")
     private let tagDots = NSStackView()
     private var item: FileItem?
-    private var iconSize: CGFloat = 64
+    private var metrics = IconMetrics.current
     private weak var collection: FileCollectionView?
     private var isEditingName = false
 
@@ -331,10 +337,13 @@ final class IconItem: NSCollectionViewItem {
         label.layer?.cornerRadius = 4
         label.drawsBackground = false
         label.focusRingType = .none
+        infoLabel.textColor = .controlAccentColor
+        infoLabel.lineBreakMode = .byTruncatingTail
         tagDots.spacing = -3
         root.addSubview(iconBackground)
         root.addSubview(icon)
         root.addSubview(label)
+        root.addSubview(infoLabel)
         root.addSubview(tagDots)
         view = root
         imageView = icon
@@ -345,13 +354,19 @@ final class IconItem: NSCollectionViewItem {
     override func viewDidAppear() { super.viewDidAppear(); updateAppearance() }
     override var highlightState: NSCollectionViewItem.HighlightState { didSet { updateAppearance() } }
 
-    func configure(_ item: FileItem, iconSize: CGFloat, collection: FileCollectionView) {
+    func configure(_ item: FileItem, metrics: IconMetrics, collection: FileCollectionView) {
         self.item = item
-        self.iconSize = iconSize
+        self.metrics = metrics
         self.collection = collection
         icon.image = item.icon
         icon.alphaValue = item.isHidden ? 0.5 : 1
         label.stringValue = item.displayName
+        label.font = metrics.font
+        label.alignment = metrics.labelsRight ? .left : .center
+        infoLabel.font = metrics.infoFont
+        infoLabel.alignment = label.alignment
+        infoLabel.stringValue = ""
+        infoLabel.isHidden = !metrics.showInfo
         tagDots.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for tag in item.tags.prefix(3) {
             guard let color = FinderTag.color(for: tag) else { continue }
@@ -364,9 +379,18 @@ final class IconItem: NSCollectionViewItem {
             tagDots.addArrangedSubview(dot)
         }
         let ref = item.ref
-        Thumbnails.shared.thumbnail(for: item, size: iconSize) { [weak self] image in
-            guard self?.item?.ref == ref else { return }
-            self?.icon.image = image
+        if metrics.showPreview {
+            Thumbnails.shared.thumbnail(for: item, size: metrics.iconSize) { [weak self] image in
+                guard self?.item?.ref == ref else { return }
+                self?.icon.image = image
+            }
+        }
+        if metrics.showInfo {
+            ItemInfo.text(for: item) { [weak self] text in
+                guard let self, self.item?.ref == ref else { return }
+                self.infoLabel.stringValue = text ?? ""
+                self.view.needsLayout = true
+            }
         }
         updateAppearance()
         view.needsLayout = true
@@ -392,17 +416,36 @@ final class IconItem: NSCollectionViewItem {
     override func viewDidLayout() {
         super.viewDidLayout()
         let bounds = view.bounds
-        let s = iconSize
-        let iconRect = NSRect(x: (bounds.width - s) / 2, y: 6, width: s, height: s)
-        icon.frame = iconRect
-        iconBackground.frame = iconRect.insetBy(dx: -4, dy: -4)
-        let maxWidth = bounds.width - 6
-        let lineHeight = ceil(label.font!.ascender - label.font!.descender + label.font!.leading) + 1
+        let s = metrics.iconSize
+        let lineHeight = metrics.lineHeight
         let maxHeight = isEditingName ? lineHeight * 4 : lineHeight * 2 + 2
-        var size = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: maxWidth - 8, height: maxHeight))
-        size.width = min(maxWidth, ceil(size.width) + 8)
-        size.height = min(maxHeight, ceil(size.height) + 1)
-        label.frame = NSRect(x: (bounds.width - size.width) / 2, y: iconRect.maxY + 7, width: size.width, height: size.height)
+        let hasInfo = metrics.showInfo && !infoLabel.stringValue.isEmpty && !isEditingName
+        let infoHeight = hasInfo ? metrics.infoLineHeight : 0
+        infoLabel.isHidden = !hasInfo
+        if metrics.labelsRight {
+            // Icon on the left, name (and info) beside it, vertically centred like Finder.
+            let iconRect = NSRect(x: 6, y: (bounds.height - s) / 2, width: s, height: s)
+            icon.frame = iconRect
+            iconBackground.frame = iconRect.insetBy(dx: -4, dy: -4)
+            let x = iconRect.maxX + 8
+            let maxWidth = bounds.width - x - 4
+            var size = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: maxWidth - 8, height: maxHeight))
+            size.width = min(maxWidth, ceil(size.width) + 8)
+            size.height = min(maxHeight, ceil(size.height) + 1)
+            let top = (bounds.height - size.height - infoHeight) / 2
+            label.frame = NSRect(x: x, y: top, width: size.width, height: size.height)
+            infoLabel.frame = NSRect(x: x, y: label.frame.maxY, width: maxWidth, height: infoHeight)
+        } else {
+            let iconRect = NSRect(x: (bounds.width - s) / 2, y: 6, width: s, height: s)
+            icon.frame = iconRect
+            iconBackground.frame = iconRect.insetBy(dx: -4, dy: -4)
+            let maxWidth = bounds.width - 6
+            var size = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: maxWidth - 8, height: maxHeight))
+            size.width = min(maxWidth, ceil(size.width) + 8)
+            size.height = min(maxHeight, ceil(size.height) + 1)
+            label.frame = NSRect(x: (bounds.width - size.width) / 2, y: iconRect.maxY + 7, width: size.width, height: size.height)
+            infoLabel.frame = NSRect(x: 3, y: label.frame.maxY, width: bounds.width - 6, height: infoHeight)
+        }
         let dotsSize = tagDots.fittingSize
         tagDots.frame = NSRect(x: label.frame.maxX - 2, y: label.frame.minY + 3, width: dotsSize.width, height: dotsSize.height)
     }
@@ -434,4 +477,79 @@ final class IconItem: NSCollectionViewItem {
 
 final class FlippedView: NSView {
     override var isFlipped: Bool { true }
+}
+
+// MARK: - View options
+
+/// Icon view sizes derived from the View Options settings.
+struct IconMetrics {
+    let iconSize: CGFloat
+    let font: NSFont
+    let infoFont: NSFont
+    let labelsRight: Bool
+    let showInfo: Bool
+    let showPreview: Bool
+    let lineHeight: CGFloat
+    let infoLineHeight: CGFloat
+    let itemSize: NSSize
+    let lineSpacing: CGFloat
+
+    static var current: IconMetrics {
+        let prefs = Prefs.shared
+        let s = prefs.iconSize
+        let spacing = prefs.iconGridSpacing
+        let font = NSFont.systemFont(ofSize: prefs.iconTextSize)
+        let infoFont = NSFont.systemFont(ofSize: max(9, prefs.iconTextSize - 1))
+        func height(_ f: NSFont) -> CGFloat { ceil(f.ascender - f.descender + f.leading) + 1 }
+        let lineHeight = height(font)
+        let infoLineHeight = prefs.iconShowInfo ? height(infoFont) : 0
+        let itemSize: NSSize
+        if prefs.iconLabelsRight {
+            let text = lineHeight * 2 + 2 + infoLineHeight
+            itemSize = NSSize(width: s + 18 + 100 + spacing * 2, height: max(s + 8, text) + 8)
+        } else {
+            itemSize = NSSize(width: max(s, 52) + spacing * 2, height: s + 6 + 7 + lineHeight * 2 + 2 + infoLineHeight + 5)
+        }
+        return IconMetrics(iconSize: s, font: font, infoFont: infoFont, labelsRight: prefs.iconLabelsRight,
+                           showInfo: prefs.iconShowInfo, showPreview: prefs.iconShowPreview, lineHeight: lineHeight,
+                           infoLineHeight: infoLineHeight, itemSize: itemSize, lineSpacing: max(0, (spacing - 24) / 2))
+    }
+}
+
+/// Finder's “Show item info”: how many items a folder holds, an image's pixel size, or a file's size.
+enum ItemInfo {
+    private static let cache = NSCache<NSString, NSString>()
+    private static let queue = DispatchQueue(label: "io.matej.scout.iteminfo", qos: .utility, attributes: .concurrent)
+
+    static func text(for item: FileItem, completion: @escaping (String?) -> Void) {
+        guard case .local(let url) = item.ref, url.isFileURL else {
+            completion(item.isBrowsable ? nil : Fmt.size(item.size))
+            return
+        }
+        let showHidden = Prefs.shared.showHidden
+        let key = "\(url.path)#\(item.modified?.timeIntervalSince1970 ?? 0)#\(showHidden)" as NSString
+        if let cached = cache.object(forKey: key) { completion(cached.length == 0 ? nil : cached as String); return }
+        let isBrowsable = item.isBrowsable
+        let size = item.size
+        queue.async {
+            let text = compute(url, isBrowsable: isBrowsable, size: size, showHidden: showHidden)
+            cache.setObject((text ?? "") as NSString, forKey: key)
+            DispatchQueue.main.async { completion(text) }
+        }
+    }
+
+    private static func compute(_ url: URL, isBrowsable: Bool, size: Int64?, showHidden: Bool) -> String? {
+        if isBrowsable {
+            let options: FileManager.DirectoryEnumerationOptions = showHidden ? [] : [.skipsHiddenFiles]
+            guard let count = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: options).count else { return nil }
+            return count == 1 ? "1 item" : "\(count) items"
+        }
+        if let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
+           let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = props[kCGImagePropertyPixelWidth] as? Int, let height = props[kCGImagePropertyPixelHeight] as? Int {
+            return "\(width) × \(height)"
+        }
+        return size.map { Fmt.size($0) }
+    }
 }
