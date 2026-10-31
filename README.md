@@ -7,7 +7,7 @@ A native macOS clone of Finder, built with AppKit, that adds two things Finder d
 
 ## Finder features
 
-- Icon, List, Column and Gallery views (⌘1–⌘4), remembered per folder. New folders open as a list (`default-view` in the [configuration file](#configuration) changes that)
+- Icon, List, Column and Gallery views (⌘1–⌘4), remembered per folder. New folders open as a list (`defaultView` in the [configuration file](#configuration) changes that)
 - View Options (⌘J): icon size, grid spacing, text size, label position, item info and icon previews; list icon size, text size, columns and relative dates; column text size, icons and preview column; sort order, and Use as Defaults
 - Sidebar with Favourites (drag folders in, drag them out to remove), Locations, SSH hosts and Tags
 - Back/forward history, enclosing folder (⌘↑), Go menu shortcuts
@@ -20,7 +20,7 @@ A native macOS clone of Finder, built with AppKit, that adds two things Finder d
 
 ## Search
 
-Search (⌘F) works like Finder's and uses Spotlight, with results arriving as they're found and updating live. A scope bar under the toolbar chooses where to look: **This Mac**, the **disk** the folder is on, or the **current folder**. On the right you choose between **Name & Contents** (Finder's default, matching words in names, contents and metadata) and **Name Only**. Which scope a new search starts with follows `search-scope` in the [configuration file](#configuration), initialised from Finder's "When performing a search" setting.
+Search (⌘F) works like Finder's and uses Spotlight, with results arriving as they're found and updating live. A scope bar under the toolbar chooses where to look: **This Mac**, the **disk** the folder is on, or the **current folder**. On the right you choose between **Name & Contents** (Finder's default, matching words in names, contents and metadata) and **Name Only**. Which scope a new search starts with follows `searchScope` in the [configuration file](#configuration), initialised from Finder's "When performing a search" setting.
 
 In an SSH folder, the scopes are the **server** and the **current folder**. Scout runs `find` (names) and `grep` (contents) on the server, limited to 30 seconds and 3,000 results.
 
@@ -61,22 +61,29 @@ Download the latest `Scout-<version>-arm64.dmg` from [Releases](https://github.c
 
 ## Configuration
 
-Scout has no settings window. Like Ghostty, it reads a text file, `~/.config/io.matej.Scout/config` (or `$XDG_CONFIG_HOME/io.matej.Scout/config`). **⌘,** opens it in your text editor, creating it with every option commented out. Scout rereads it when you switch back to Scout, or with **⇧⌘,** (Reload Configuration).
+Scout has no settings window. Like Ghostty, it reads a text file, `~/.config/io.matej.Scout/config.json5` (or `$XDG_CONFIG_HOME/io.matej.Scout/config.json5`). **⌘,** opens it in your text editor, creating it with every option commented out. Scout rereads it when you switch back to Scout, or with **⇧⌘,** (Reload Configuration).
 
-```ini
-show-hidden-files = true
-default-view = list             # icon, list, column or gallery
-search-scope = current-folder   # this-mac, current-folder or previous
-terminal = ghostty
+The file is [JSON5](https://json5.org): one object, with `//` and `/* */` comments, unquoted keys, single or double quotes and trailing commas allowed.
+
+```json5
+{
+  showHiddenFiles: true,
+  defaultView: "list",           // icon, list, column or gallery
+  searchScope: "currentFolder",  // thisMac, currentFolder or previous
+  terminal: "ghostty",
+  favorites: ["~/Projects", "~/Downloads", "/Applications"],
+}
 ```
 
-Options that aren't set follow Finder's settings. View menu toggles such as Show Hidden Files still work, and last until the file is next reloaded.
+Options that aren't set (or are `null`) follow Finder's settings. View menu toggles such as Show Hidden Files still work, and last until the file is next reloaded.
+
+`favorites` lists the folders under Favourites in the sidebar, in order (`~` is your home folder). When it's set, it replaces the sidebar's list on every reload, and folders dragged in or out of the sidebar last until then. Leave it out to manage Favourites only by dragging.
 
 ### Open in Terminal
 
 `terminal` chooses the app: `terminal` (the default), `iterm`, `ghostty`, `warp`, `kitty`, `wezterm`, `alacritty` or `cmux`. Any other value is treated as an app name, for local folders only. SSH folders open with `ssh -t host`, starting in the folder, in every preset except Warp, which can't be told to run a command.
 
-For anything else, `terminal-command` runs a command through your login shell with these variables set:
+For anything else, `terminalCommand` runs a command through your login shell with these variables set:
 
 | Variable | Value |
 | --- | --- |
@@ -85,9 +92,10 @@ For anything else, `terminal-command` runs a command through your login shell wi
 | `SCOUT_PATH` | the folder's path, on the Mac or on the host |
 | `SCOUT_COMMAND` | a shell command that starts a shell in the folder, through ssh for SSH folders |
 
-```ini
-terminal-command = open -a Ghostty "$SCOUT_DIR"
-terminal-command = ~/.config/io.matej.Scout/open-terminal.sh
+```json5
+terminalCommand: "open -a Ghostty \"$SCOUT_DIR\"",
+// or
+terminalCommand: "~/.config/io.matej.Scout/open-terminal.sh",
 ```
 
 If the command fails, Scout shows its error output.

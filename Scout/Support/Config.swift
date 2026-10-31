@@ -1,10 +1,10 @@
 import AppKit
 
-/// Scout's settings file, `~/.config/io.matej.Scout/config`, written like Ghostty's: one `key = value`
-/// per line, `#` starts a comment, and a later line wins over an earlier one.
+/// Scout's settings file, `~/.config/io.matej.Scout/config.json5`: a JSON5 object, so it can have
+/// comments, single-quoted strings, trailing commas and unquoted keys.
 /// The file is read at launch and again whenever it has changed when Scout comes to the front
-/// (or on Reload Configuration). Its values win over menu toggles such as Show Hidden Files,
-/// which last until the next reload.
+/// (or on Reload Configuration). Its values win over menu toggles such as Show Hidden Files and over
+/// favourites dragged into the sidebar, which last until the next reload.
 final class Config {
     static let shared = Config()
 
@@ -12,30 +12,34 @@ final class Config {
         case bool
         case choice([String])
         case text
+        case paths
     }
 
     static let keys: [String: Kind] = [
-        "show-hidden-files": .bool,
-        "folders-first": .bool,
-        "show-path-bar": .bool,
-        "show-status-bar": .bool,
-        "show-tags": .bool,
-        "show-recents": .bool,
-        "default-view": .choice(["icon", "list", "column", "gallery"]),
-        "search-scope": .choice(["this-mac", "current-folder", "previous"]),
-        "auto-update": .bool,
+        "showHiddenFiles": .bool,
+        "foldersFirst": .bool,
+        "showPathBar": .bool,
+        "showStatusBar": .bool,
+        "showTags": .bool,
+        "showRecents": .bool,
+        "favorites": .paths,
+        "defaultView": .choice(["icon", "list", "column", "gallery"]),
+        "searchScope": .choice(["thisMac", "currentFolder", "previous"]),
+        "autoUpdate": .bool,
         "terminal": .text,
-        "terminal-command": .text,
+        "terminalCommand": .text,
     ]
 
-    static var url: URL {
+    static var directory: URL {
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
         let base = xdg.map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config")
-        return base.appendingPathComponent("io.matej.Scout/config")
+        return base.appendingPathComponent("io.matej.Scout")
     }
 
-    private(set) var values: [String: String] = [:]
+    static var url: URL { directory.appendingPathComponent("config.json5") }
+
+    private(set) var values: [String: Any] = [:]
     private var loadedDate: Date?
 
     private init() {
@@ -44,9 +48,11 @@ final class Config {
         }
     }
 
-    func string(_ key: String) -> String? { values[key] }
+    func string(_ key: String) -> String? { values[key] as? String }
 
-    func bool(_ key: String) -> Bool? { values[key].map { $0 == "true" } }
+    func bool(_ key: String) -> Bool? { values[key] as? Bool }
+
+    func strings(_ key: String) -> [String]? { values[key] as? [String] }
 
     private static func modificationDate() -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
@@ -65,34 +71,53 @@ final class Config {
             return
         }
         let (parsed, problems) = Config.parse(text)
-        values = parsed
+        // A file that doesn't parse at all keeps the settings Scout already has.
+        if let parsed { values = parsed }
         Prefs.shared.apply(self)
-        if let auto = bool("auto-update") { Updater.shared.automaticallyChecks = auto }
+        if let auto = bool("autoUpdate") { Updater.shared.automaticallyChecks = auto }
         if !problems.isEmpty {
-            Config.alert("Some lines in the configuration were ignored.", problems.joined(separator: "\n"))
+            Config.alert(parsed == nil ? "Scout couldn’t read the configuration." : "Some settings in the configuration were ignored.",
+                         problems.joined(separator: "\n"))
         }
     }
 
-    static func parse(_ text: String) -> (values: [String: String], problems: [String]) {
-        var values: [String: String] = [:]
+    /// Parses the JSON5 text into checked values; `values` is nil when the text isn't a JSON5 object.
+    static func parse(_ text: String) -> (values: [String: Any]?, problems: [String]) {
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.json5Allowed])
+        } catch {
+            let detail = (error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String ?? error.localizedDescription
+            return (nil, [detail])
+        }
+        guard let dictionary = object as? [String: Any] else {
+            return (nil, ["The file should hold one object, between { and }."])
+        }
+        var values: [String: Any] = [:]
         var problems: [String] = []
-        for (index, raw) in text.components(separatedBy: .newlines).enumerated() {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty || line.hasPrefix("#") { continue }
-            let at = "Line \(index + 1)"
-            guard let eq = line.firstIndex(of: "=") else { problems.append("\(at): expected key = value"); continue }
-            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
-            var value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") { value = String(value.dropFirst().dropLast()) }
-            guard let kind = keys[key] else { problems.append("\(at): unknown key “\(key)”"); continue }
+        for (key, value) in dictionary.sorted(by: { $0.key < $1.key }) {
+            guard let kind = keys[key] else { problems.append("Unknown setting “\(key)”"); continue }
+            // null resets the setting to its default.
+            if value is NSNull { continue }
             switch kind {
-            case .bool where value != "true" && value != "false":
-                problems.append("\(at): \(key) must be true or false")
-            case .choice(let options) where !options.contains(value):
-                problems.append("\(at): \(key) must be one of \(options.joined(separator: ", "))")
-            default:
-                // An empty value resets the key to its default, as in Ghostty.
-                if value.isEmpty { values[key] = nil } else { values[key] = value }
+            case .bool:
+                guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                    problems.append("\(key) must be true or false"); continue
+                }
+                values[key] = number.boolValue
+            case .choice(let options):
+                guard let choice = value as? String, options.contains(choice) else {
+                    problems.append("\(key) must be one of \(options.map { "\"\($0)\"" }.joined(separator: ", "))"); continue
+                }
+                values[key] = choice
+            case .text:
+                guard let string = value as? String else { problems.append("\(key) must be a string"); continue }
+                if !string.isEmpty { values[key] = string }
+            case .paths:
+                guard let paths = value as? [Any], paths.allSatisfy({ $0 is String }) else {
+                    problems.append("\(key) must be a list of paths, like [\"~/Documents\", \"/Applications\"]"); continue
+                }
+                values[key] = (paths as! [String]).map { ($0 as NSString).expandingTildeInPath }
             }
         }
         return (values, problems)
@@ -127,46 +152,51 @@ final class Config {
     }
 
     static let template = """
-    # Scout configuration
-    #
-    # One `key = value` per line; lines starting with # are comments.
-    # Scout rereads this file when you switch back to it, or with Scout › Reload Configuration (⇧⌘,).
-    # Uncomment a line to change a setting; leaving it out keeps the default.
+    // Scout configuration (JSON5: comments, unquoted keys, single quotes and trailing commas are fine)
+    //
+    // Scout rereads this file when you switch back to it, or with Scout › Reload Configuration (⇧⌘,).
+    // Uncomment a line to change a setting; leaving it out (or setting it to null) keeps the default.
+    {
+      // Finder-style options. The defaults follow your Finder settings, and the
+      // View menu toggles still work until this file is next reloaded.
+      // showHiddenFiles: false,
+      // foldersFirst: false,
+      // showPathBar: false,
+      // showStatusBar: true,
+      // showTags: true,
+      // showRecents: true,
 
-    # Finder-style options. The defaults follow your Finder settings, and the
-    # View menu toggles still work until this file is next reloaded.
-    # show-hidden-files = false
-    # folders-first = false
-    # show-path-bar = false
-    # show-status-bar = true
-    # show-tags = true
-    # show-recents = true
+      // The folders under Favourites in the sidebar, in order. ~ is your home folder.
+      // When set, this list replaces the sidebar's on every reload; folders dragged
+      // in or out of the sidebar last until then.
+      // favorites: ["/Applications", "~/Desktop", "~/Documents", "~/Downloads"],
 
-    # How folders open until you pick a view for them: icon, list, column or gallery.
-    # Each folder remembers the view you last used in it.
-    # default-view = list
+      // How folders open until you pick a view for them: "icon", "list", "column" or "gallery".
+      // Each folder remembers the view you last used in it.
+      // defaultView: "list",
 
-    # Where a new search looks: this-mac, current-folder or previous
-    # search-scope = this-mac
+      // Where a new search looks: "thisMac", "currentFolder" or "previous".
+      // searchScope: "thisMac",
 
-    # Check for Scout updates automatically.
-    # auto-update = true
+      // Check for Scout updates automatically.
+      // autoUpdate: true,
 
-    # Open in Terminal
-    #
-    # terminal picks the app: terminal (the default), iterm, ghostty, warp, kitty,
-    # wezterm, alacritty or cmux. Any other value is used as an app name, which
-    # works for local folders only.
-    # terminal = ghostty
-    #
-    # terminal-command replaces that with your own command, run by your login shell
-    # with these variables set:
-    #   SCOUT_DIR      the local folder (empty for SSH folders)
-    #   SCOUT_HOST     the SSH host (empty for local folders)
-    #   SCOUT_PATH     the folder’s path, on the Mac or on the host
-    #   SCOUT_COMMAND  a shell command that starts a shell in the folder (via ssh for SSH folders)
-    # terminal-command = open -a Ghostty "$SCOUT_DIR"
-    # terminal-command = ~/.config/io.matej.Scout/open-terminal.sh
+      // Open in Terminal
+      //
+      // terminal picks the app: "terminal" (the default), "iterm", "ghostty", "warp", "kitty",
+      // "wezterm", "alacritty" or "cmux". Any other value is used as an app name, which
+      // works for local folders only.
+      // terminal: "ghostty",
+      //
+      // terminalCommand replaces that with your own command, run by your login shell
+      // with these variables set:
+      //   SCOUT_DIR      the local folder (empty for SSH folders)
+      //   SCOUT_HOST     the SSH host (empty for local folders)
+      //   SCOUT_PATH     the folder’s path, on the Mac or on the host
+      //   SCOUT_COMMAND  a shell command that starts a shell in the folder (via ssh for SSH folders)
+      // terminalCommand: "open -a Ghostty \\"$SCOUT_DIR\\"",
+      // terminalCommand: "~/.config/io.matej.Scout/open-terminal.sh",
+    }
 
     """
 }

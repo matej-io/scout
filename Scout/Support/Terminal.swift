@@ -1,6 +1,6 @@
 import AppKit
 
-/// Open in Terminal, using the app or command chosen in the config file (`terminal`, `terminal-command`).
+/// Open in Terminal, using the app or command chosen in the config file (`terminal`, `terminalCommand`).
 enum Terminal {
     struct Preset {
         let title: String
@@ -65,8 +65,8 @@ enum Terminal {
         let isRemote = ref.isRemote
         let config = Config.shared
 
-        if let command = config.string("terminal-command") {
-            run(loginShell, ["-l", "-c", command], env: env, title: "terminal-command")
+        if let command = config.string("terminalCommand") {
+            run(loginShell, ["-l", "-c", command], env: env, title: "terminalCommand")
             return
         }
 
@@ -78,7 +78,7 @@ enum Terminal {
             }
             guard let command = isRemote ? preset.remote : preset.local else {
                 Config.alert("\(preset.title) can’t open SSH folders.",
-                             "Scout can’t ask \(preset.title) to run ssh. Use another terminal, or set `terminal-command` in \(Config.displayPath).")
+                             "Scout can’t ask \(preset.title) to run ssh. Use another terminal, or set `terminalCommand` in \(Config.displayPath).")
                 return
             }
             env["SCOUT_APP"] = app.path
@@ -86,7 +86,7 @@ enum Terminal {
         } else {
             guard !isRemote else {
                 Config.alert("Scout doesn’t know how to open SSH folders in \(name).",
-                             "Set `terminal-command` in \(Config.displayPath) to say how.")
+                             "Set `terminalCommand` in \(Config.displayPath) to say how.")
                 return
             }
             env["SCOUT_APP"] = name
@@ -94,7 +94,7 @@ enum Terminal {
         }
     }
 
-    /// The user’s shell, so `terminal-command` sees the same PATH as in a terminal.
+    /// The user’s shell, so `terminalCommand` sees the same PATH as in a terminal.
     private static var loginShell: String {
         if let shell = ProcessInfo.processInfo.environment["SHELL"], !shell.isEmpty { return shell }
         if let pw = getpwuid(getuid()), let shell = pw.pointee.pw_shell { return String(cString: shell) }

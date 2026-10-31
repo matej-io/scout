@@ -98,17 +98,18 @@ final class Prefs {
 
     /// Takes the values set in the config file, leaving the rest as they are.
     func apply(_ config: Config) {
-        let bools = ["show-hidden-files": "showHidden", "folders-first": "foldersFirst", "show-path-bar": "showPathBar",
-                     "show-status-bar": "showStatusBar", "show-tags": "showTags", "show-recents": "showRecents"]
+        let bools = ["showHiddenFiles": "showHidden", "foldersFirst": "foldersFirst", "showPathBar": "showPathBar",
+                     "showStatusBar": "showStatusBar", "showTags": "showTags", "showRecents": "showRecents"]
         for (key, pref) in bools {
             if let value = config.bool(key) { defaults.set(value, forKey: pref) }
         }
-        if let view = config.string("default-view"), let mode = ViewMode(configName: view) {
+        if let view = config.string("defaultView"), let mode = ViewMode(configName: view) {
             defaults.set(mode.rawValue, forKey: "defaultViewMode")
         }
-        if let scope = config.string("search-scope") {
-            searchScopeDefault = ["this-mac": "SCev", "current-folder": "SCcf", "previous": "SCsp"][scope] ?? "SCev"
+        if let scope = config.string("searchScope") {
+            searchScopeDefault = ["thisMac": "SCev", "currentFolder": "SCcf", "previous": "SCsp"][scope] ?? "SCev"
         }
+        if let paths = config.strings("favorites") { defaults.set(paths, forKey: "favorites") }
         post()
     }
 
