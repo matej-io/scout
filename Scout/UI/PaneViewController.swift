@@ -835,7 +835,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     }
 
     private static func playTrashSound() {
-        let path = "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/finder/move to trash.aif"
+        let path = "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/dock/drag to trash.aif"
         NSSound(contentsOfFile: path, byReference: true)?.play()
     }
 
