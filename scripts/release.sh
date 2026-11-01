@@ -3,10 +3,11 @@
 # packages it into a DMG, writes the Sparkle appcast and (optionally) publishes a GitHub release.
 #
 # Usage:
-#   scripts/release.sh [version] [--publish] [--no-notarize]
+#   scripts/release.sh [version] [--publish] [--force] [--no-notarize]
 #
 #   version        Marketing version, e.g. 1.0.0 (defaults to MARKETING_VERSION in the project)
 #   --publish      Create a GitHub release "v<version>" with the DMG attached (uses gh)
+#   --force        With --publish, replace the DMG of an existing release v<version> instead of failing
 #   --no-notarize  Skip notarization (the app will only run on this Mac without Gatekeeper warnings)
 #
 # Optional: RELEASE_NOTES="..." adds a "What's new" section to the GitHub release and the in-app update window.
@@ -20,7 +21,7 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'EOF'
-Usage: scripts/release.sh [version] [--publish] [--no-notarize]
+Usage: scripts/release.sh [version] [--publish] [--force] [--no-notarize]
 
 Builds Scout for Apple silicon, signs it with Developer ID, notarizes it and
 packages it as build/release/Scout-<version>-arm64.dmg, plus build/release/appcast.xml
@@ -31,6 +32,9 @@ Arguments:
                  MARKETING_VERSION from the Xcode project.
   --publish      Also create the GitHub release v<version> with the DMG and appcast.xml attached.
                  The current commit is pushed first and the tag is created on it.
+                 Fails before building if tag v<version> or its release already exists.
+  --force        With --publish, replace the DMG and appcast.xml of the existing
+                 release v<version> (the tag stays on its original commit).
   --no-notarize  Skip notarization (Gatekeeper will warn on other Macs).
   -h, --help     Show this help.
 
@@ -54,8 +58,8 @@ Good to know:
     leaves MARKETING_VERSION at its old value, so a later run without a version
     (or a build from Xcode) uses the old number. Either always pass the version
     or bump MARKETING_VERSION before releasing.
-  - If release v<version> already exists, --publish replaces its DMG instead of
-    failing. That's handy for fixing a broken build, but easy to do by accident.
+  - If tag v<version> already exists, --publish stops before building. Pass --force
+    to replace the existing release's DMG, e.g. to fix a broken build.
 
 Environment:
   RELEASE_NOTES="..."   Adds a "What's new" section (Markdown) to the GitHub release and
@@ -70,18 +74,21 @@ Environment:
 Examples:
   scripts/release.sh 1.2.0
   RELEASE_NOTES="- Faster SSH listings" scripts/release.sh 1.2.0 --publish
+  scripts/release.sh 1.2.0 --publish --force
 EOF
 }
 
 TEAM_ID=${TEAM_ID:-6H56BMGV4C}
 APP=Scout
 PUBLISH=0
+FORCE=0
 NOTARIZE=1
 VERSION=""
 for arg in "$@"; do
   case "$arg" in
     -h|--help) usage; exit 0 ;;
     --publish) PUBLISH=1 ;;
+    --force) FORCE=1 ;;
     --no-notarize) NOTARIZE=0 ;;
     -*) echo "Unknown option $arg (see --help)" >&2; exit 1 ;;
     *) VERSION=$arg ;;
@@ -99,6 +106,17 @@ REPO=matej-io/scout
 ARCHIVE=$OUT/$APP.xcarchive
 EXPORT=$OUT/export
 DMG=$OUT/$APP-$VERSION-arm64.dmg
+TAG=v$VERSION
+
+# Catch an existing tag before spending time on the build and notarization.
+if (( PUBLISH && ! FORCE )); then
+  if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
+      || [[ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]] \
+      || gh release view $TAG >/dev/null 2>&1; then
+    echo "Tag $TAG already exists. Pick a new version, or pass --force to replace the release's DMG." >&2
+    exit 1
+  fi
+fi
 
 AUTH=(-allowProvisioningUpdates)
 if [[ -n "${ASC_KEY_PATH:-}" ]]; then
@@ -223,7 +241,6 @@ SIGNATURE=$($PACKAGES/artifacts/sparkle/Sparkle/bin/sign_update "${SIGN_ARGS[@]}
 xmllint --noout $OUT/appcast.xml
 
 if (( PUBLISH )); then
-  TAG=v$VERSION
   step "Publishing GitHub release $TAG"
   NOTES=$OUT/notes.md
   {
