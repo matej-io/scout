@@ -4,6 +4,24 @@ import Quartz
 final class ScoutWindow: NSWindow {
     var onFirstResponderChange: ((NSResponder?) -> Void)?
 
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown,
+           let contentView {
+            // Activate before dispatch so background clicks and controls target this pane.
+            // hitTest expects a point in the receiver's superview coordinates.
+            let point = contentView.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+            var hit = contentView.hitTest(point)
+            while let view = hit {
+                if let root = view as? PaneRootView {
+                    if let pane = root.pane, !pane.isActive { pane.focus() }
+                    break
+                }
+                hit = view.superview
+            }
+        }
+        super.sendEvent(event)
+    }
+
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
         let ok = super.makeFirstResponder(responder)
         if ok { onFirstResponderChange?(responder) }
