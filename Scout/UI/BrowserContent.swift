@@ -57,3 +57,34 @@ enum BrowserKeys {
         return false
     }
 }
+
+/// Finder's click-to-rename: a single click on the name of the only selected item starts renaming it,
+/// once the double-click interval passes without a second click (so opening a file never renames it).
+final class ClickRename {
+    private var armed: (start: NSPoint, fire: () -> Void)?
+    private var pending: DispatchWorkItem?
+
+    func cancel() {
+        armed = nil
+        pending?.cancel()
+        pending = nil
+    }
+
+    /// Call on mouse down, before the view's own handling. `eligible` says the click hit the name of the sole selection.
+    func mouseDown(_ event: NSEvent, eligible: Bool, fire: @escaping () -> Void) {
+        cancel()
+        guard eligible, event.clickCount == 1,
+              event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { return }
+        armed = (event.locationInWindow, fire)
+    }
+
+    /// Call with the mouse up (also right after a mouse down whose tracking loop swallowed it). A drag in between cancels.
+    func mouseUp(_ event: NSEvent?) {
+        guard let armed, let event, event.type == .leftMouseUp else { return }
+        self.armed = nil
+        guard abs(event.locationInWindow.x - armed.start.x) < 3, abs(event.locationInWindow.y - armed.start.y) < 3 else { return }
+        let work = DispatchWorkItem(block: armed.fire)
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: work)
+    }
+}

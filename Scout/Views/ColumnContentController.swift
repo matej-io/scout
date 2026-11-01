@@ -31,6 +31,8 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
     private let root = FileItem(ref: .local(URL(fileURLWithPath: "/")), name: "", isDirectory: true, isHidden: false,
                                 size: nil, modified: nil, kind: "")
     private var loading = Set<ObjectIdentifier>()
+    private let clickRename = ClickRename()
+    private var clickMonitor: Any?
 
     private struct Cell: Hashable { let row: Int; let column: Int }
     /// In column view a spring-loaded folder is selected, which opens its contents in the next column.
@@ -65,6 +67,51 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
         browser.onMenu = { [weak self] row, column in self?.menu(row: row, column: column) }
         browser.onDragExit = { [weak self] in self?.springLoader.cancel() }
         view = browser
+        // The browser's columns take the clicks themselves, so watch them on their way in.
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .keyDown]) { [weak self] event in
+            self?.watch(event)
+            return event
+        }
+    }
+
+    deinit {
+        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+    }
+
+    private func watch(_ event: NSEvent) {
+        guard event.window === browser.window else { return }
+        switch event.type {
+        case .leftMouseDown:
+            let point = browser.convert(event.locationInWindow, from: nil)
+            guard browser.bounds.contains(point) else { clickRename.cancel(); return }
+            var row = -1
+            var column = -1
+            let hit = browser.getRow(&row, column: &column, for: point)
+            let eligible = hit && row >= 0 && column >= 0 && browser.selectedColumn == column
+                && browser.selectedRowIndexes(inColumn: column) == IndexSet(integer: row)
+                && nameRect(row: row, column: column).contains(point)
+            clickRename.mouseDown(event, eligible: eligible) { [weak self] in
+                guard let self, let responder = self.view.window?.firstResponder as? NSView, responder.isDescendant(of: self.browser),
+                      self.browser.selectedColumn == column,
+                      self.browser.selectedRowIndexes(inColumn: column) == IndexSet(integer: row) else { return }
+                self.pane?.renameSelection(nil)
+            }
+        case .leftMouseUp:
+            clickRename.mouseUp(event)
+        default:
+            clickRename.cancel()
+        }
+    }
+
+    /// Where FileBrowserCell draws the name, in browser coordinates.
+    private func nameRect(row: Int, column: Int) -> NSRect {
+        guard let item = browser.item(atRow: row, inColumn: column) as? FileItem else { return .zero }
+        let cell = browser.frame(ofRow: row, inColumn: column)
+        let x = cell.minX + 8 + (Prefs.shared.columnShowIcons ? 22 : 0)
+        let font = NSFont.systemFont(ofSize: Prefs.shared.columnTextSize)
+        let width = (item.displayName as NSString).size(withAttributes: [.font: font]).width
+        let maxX = cell.maxX - (item.isBrowsable ? 22 : 0) - 6
+        return NSRect(x: x, y: cell.minY, width: max(0, min(width, maxX - x)), height: cell.height)
     }
 
     override func viewDidLayout() {
@@ -90,6 +137,7 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
     // MARK: BrowserContent
 
     func display(_ newItems: [FileItem], select refs: [ItemRef]?) {
+        clickRename.cancel()
         // Keep loaded children along the open path so the columns survive a refresh.
         let oldChildren = Dictionary((root.children ?? []).map { ($0.ref, $0.children) }, uniquingKeysWith: { a, _ in a })
         for item in newItems where item.children == nil { item.children = oldChildren[item.ref] ?? nil }

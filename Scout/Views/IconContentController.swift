@@ -34,6 +34,7 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
         collection.setDraggingSourceOperationMask([.copy, .move, .link, .generic, .delete], forLocal: false)
         collection.setDraggingSourceOperationMask([.copy, .move, .generic], forLocal: true)
         collection.onDoubleClick = { [weak self] in self?.pane?.open(self?.selectedItems ?? []) }
+        collection.onRenameClick = { [weak self] in self?.pane?.renameSelection(nil) }
         collection.onFocusChange = { [weak self] in self?.refreshVisible() }
         collection.typeSelect = { [weak self] prefix in self?.typeSelect(prefix) }
         collection.onDragExit = { [weak self] in self?.springLoader.cancel() }
@@ -67,6 +68,7 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
     // MARK: BrowserContent
 
     func display(_ newItems: [FileItem], select refs: [ItemRef]?) {
+        collection.cancelPendingRename()
         items = newItems
         collection.reloadData()
         if let refs { select(refs) }
@@ -106,10 +108,12 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
     }
 
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
+        collection.cancelPendingRename()
         pane?.selectionDidChange()
     }
 
     func collectionView(_ collectionView: NSCollectionView, didDeselectItemsAt indexPaths: Set<IndexPath>) {
+        collection.cancelPendingRename()
         pane?.selectionDidChange()
     }
 
@@ -142,6 +146,10 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
         }
         guard let destination else { return false }
         return DragSupport.accept(draggingInfo, destination: destination, window: view.window)
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forItemsAt indexPaths: Set<IndexPath>) {
+        collection.cancelPendingRename()
     }
 
     func collectionView(_ collectionView: NSCollectionView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, dragOperation operation: NSDragOperation) {
@@ -233,6 +241,7 @@ final class IconGridLayout: NSCollectionViewFlowLayout {
 final class FileCollectionView: NSCollectionView {
     weak var pane: PaneViewController?
     var onDoubleClick: (() -> Void)?
+    var onRenameClick: (() -> Void)?
     var onFocusChange: (() -> Void)?
     var typeSelect: ((String) -> Void)?
     var onDragExit: (() -> Void)?
@@ -250,15 +259,34 @@ final class FileCollectionView: NSCollectionView {
     private var typeBuffer = ""
     private var lastType = Date.distantPast
 
+    private let clickRename = ClickRename()
+
+    func cancelPendingRename() { clickRename.cancel() }
+
     override func mouseDown(with event: NSEvent) {
+        let path = indexPathForItem(at: convert(event.locationInWindow, from: nil))
+        let label = path.flatMap { (item(at: $0) as? IconItem)?.label }
+        let eligible = onRenameClick != nil && path != nil && selectionIndexPaths == [path!]
+            && label.map { !$0.isEditable && $0.bounds.contains($0.convert(event.locationInWindow, from: nil)) } == true
+        clickRename.mouseDown(event, eligible: eligible) { [weak self] in
+            guard let self, let path, self.window?.firstResponder === self, self.selectionIndexPaths == [path] else { return }
+            self.onRenameClick?()
+        }
         super.mouseDown(with: event)
+        clickRename.mouseUp(NSApp.currentEvent)
         if event.clickCount == 2, !selectionIndexPaths.isEmpty,
            indexPathForItem(at: convert(event.locationInWindow, from: nil)) != nil {
             onDoubleClick?()
         }
     }
 
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        clickRename.mouseUp(event)
+    }
+
     override func keyDown(with event: NSEvent) {
+        cancelPendingRename()
         if BrowserKeys.handle(event, pane: pane) { return }
         let flags = event.modifierFlags.intersection([.command, .control, .option])
         if flags.isEmpty, let chars = event.characters, let scalar = chars.unicodeScalars.first,
@@ -273,6 +301,7 @@ final class FileCollectionView: NSCollectionView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        cancelPendingRename()
         let point = convert(event.locationInWindow, from: nil)
         if let path = indexPathForItem(at: point) {
             if !selectionIndexPaths.contains(path) {

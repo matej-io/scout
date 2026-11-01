@@ -4,37 +4,30 @@ final class FileOutlineView: NSOutlineView {
     weak var pane: PaneViewController?
     var onDragExit: (() -> Void)?
     var onRenameClick: (() -> Void)?
-    private var pendingRename: DispatchWorkItem?
-    var didDrag = false
+    private let clickRename = ClickRename()
 
-    func cancelPendingRename() {
-        pendingRename?.cancel()
-        pendingRename = nil
-    }
+    func cancelPendingRename() { clickRename.cancel() }
 
     override func mouseDown(with event: NSEvent) {
-        cancelPendingRename()
-        didDrag = false
         let point = convert(event.locationInWindow, from: nil)
         let row = row(at: point)
         let column = column(withIdentifier: .init("name"))
         let field = row >= 0 && column >= 0
             ? (view(atColumn: column, row: row, makeIfNecessary: false) as? NameCellView)?.textField : nil
-        let canRename = row >= 0 && event.clickCount == 1 && selectedRowIndexes == IndexSet(integer: row)
-            && event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty
+        let eligible = row >= 0 && selectedRowIndexes == IndexSet(integer: row)
             && field.map { !$0.isEditable && $0.bounds.contains($0.convert(event.locationInWindow, from: nil)) } == true
-        super.mouseDown(with: event)
-        guard canRename, !didDrag, let mouseUp = NSApp.currentEvent, mouseUp.type == .leftMouseUp,
-              abs(mouseUp.locationInWindow.x - event.locationInWindow.x) < 3,
-              abs(mouseUp.locationInWindow.y - event.locationInWindow.y) < 3 else { return }
-        // Wait out the double-click interval so opening a file never starts renaming it.
-        let work = DispatchWorkItem { [weak self] in
+        clickRename.mouseDown(event, eligible: eligible) { [weak self] in
             guard let self, self.window?.firstResponder === self,
                   self.selectedRowIndexes == IndexSet(integer: row) else { return }
             self.onRenameClick?()
         }
-        pendingRename = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: work)
+        super.mouseDown(with: event)
+        clickRename.mouseUp(NSApp.currentEvent)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        clickRename.mouseUp(event)
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -447,7 +440,6 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
 
     /// Like Finder, drag just the icon and name (on a tinted pill) rather than the whole row with every column.
     func outlineView(_ outlineView: NSOutlineView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forItems draggedItems: [Any]) {
-        outline.didDrag = true
         outline.cancelPendingRename()
         let column = outlineView.column(withIdentifier: .init("name"))
         guard column >= 0 else { return }
