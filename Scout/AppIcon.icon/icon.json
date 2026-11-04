@@ -15,7 +15,7 @@
     },
     {
       "layers" : [
-        { "image-name" : "dial.png", "name" : "dial" }
+        { "image-name" : "folder.png", "name" : "folder" }
       ],
       "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
       "translucency" : { "enabled" : false, "value" : 0.5 }

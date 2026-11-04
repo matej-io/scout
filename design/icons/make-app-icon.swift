@@ -1,4 +1,4 @@
-// Builds Scout's Icon Composer icon (AppIcon.icon) from the Compass design: the dial and the star
+// Builds Scout's Icon Composer icon (AppIcon.icon) from the Folder Compass design: the folder and the star
 // as separate layers, so macOS 26 can mask the icon to its own shape and add Liquid Glass.
 // Usage: swift make-app-icon.swift <path/to/AppIcon.icon>
 import AppKit
@@ -30,34 +30,54 @@ func layer(_ name: String, _ body: () -> Void) {
     try! rep.representation(using: .png, properties: [:])!.write(to: assets.appendingPathComponent("\(name).png"))
 }
 
-layer("dial") {
-    hex(0xF6F1E4).setFill(); circle(C, 300 * k).fill()
-    hex(0x0B5E5A, 0.18).setStroke()
-    let ring = circle(C, 262 * k); ring.lineWidth = 6 * k; ring.stroke()
-    for i in 0..<16 where i % 4 != 0 {
-        let a = CGFloat(i) * .pi / 8
-        let tick = NSBezierPath()
-        tick.move(to: CGPoint(x: C.x + cos(a) * 262 * k, y: C.y + sin(a) * 262 * k))
-        tick.line(to: CGPoint(x: C.x + cos(a) * 282 * k, y: C.y + sin(a) * 282 * k))
-        tick.lineWidth = 8 * k; tick.lineCapStyle = .round
-        hex(0x0B5E5A, 0.35).setStroke(); tick.stroke()
-    }
+/// Draws in the 1024 canvas the variants used (824 pt tile), scaled about the centre to fill the layer.
+func tileSpace(_ body: () -> Void) {
+    NSGraphicsContext.saveGraphicsState()
+    let t = NSAffineTransform()
+    t.translateX(by: C.x, yBy: C.y); t.scale(by: k); t.translateX(by: -C.x, yBy: -C.y)
+    t.concat()
+    body()
+    NSGraphicsContext.restoreGraphicsState()
+}
+
+/// Folder silhouette: rounded body with a tab on the top-left that slopes down into the body.
+func folder() -> NSBezierPath {
+    let x0: CGFloat = 200, x1: CGFloat = 824, y0: CGFloat = 262, y1: CGFloat = 702, yT: CGFloat = 762
+    let r: CGFloat = 46, tabR: CGFloat = 36
+    let tabTop: CGFloat = x0 + 220, tabFoot: CGFloat = x0 + 300   // where the tab slope starts / lands
+    let p = NSBezierPath()
+    p.move(to: CGPoint(x: x0 + r, y: y0))
+    p.appendArc(from: CGPoint(x: x1, y: y0), to: CGPoint(x: x1, y: y1), radius: r)
+    p.appendArc(from: CGPoint(x: x1, y: y1), to: CGPoint(x: tabFoot, y: y1), radius: r)
+    p.line(to: CGPoint(x: tabFoot, y: y1))
+    p.curve(to: CGPoint(x: tabTop, y: yT), controlPoint1: CGPoint(x: tabFoot - 40, y: y1), controlPoint2: CGPoint(x: tabTop + 40, y: yT))
+    p.appendArc(from: CGPoint(x: x0, y: yT), to: CGPoint(x: x0, y: y0), radius: tabR)
+    p.appendArc(from: CGPoint(x: x0, y: y0), to: CGPoint(x: x1, y: y0), radius: r)
+    p.close()
+    return p
+}
+
+layer("folder") {
+    tileSpace { hex(0xF6F1E4).setFill(); folder().fill() }
 }
 
 layer("star") {
-    let long = 250 * k, short = 62 * k
-    for i in 0..<4 {
-        let angle = CGFloat(i) * .pi / 2 + .pi / 2   // north first
-        let tip = CGPoint(x: C.x + cos(angle) * long, y: C.y + sin(angle) * long)
-        let l = CGPoint(x: C.x + cos(angle + .pi / 2) * short, y: C.y + sin(angle + .pi / 2) * short)
-        let r = CGPoint(x: C.x + cos(angle - .pi / 2) * short, y: C.y + sin(angle - .pi / 2) * short)
-        let left = NSBezierPath(); left.move(to: C); left.line(to: l); left.line(to: tip); left.close()
-        let right = NSBezierPath(); right.move(to: C); right.line(to: tip); right.line(to: r); right.close()
-        let north = i == 0
-        (north ? hex(0xFF8A3D) : hex(0x1F6F6A)).setFill(); left.fill()
-        (north ? hex(0xE8590C) : hex(0x0E4744)).setFill(); right.fill()
+    tileSpace {
+        let c = CGPoint(x: 512, y: 482)   // centre of the folder body
+        let long: CGFloat = 196, short: CGFloat = 50
+        for i in 0..<4 {
+            let angle = CGFloat(i) * .pi / 2 + .pi / 2   // north first
+            let tip = CGPoint(x: c.x + cos(angle) * long, y: c.y + sin(angle) * long)
+            let l = CGPoint(x: c.x + cos(angle + .pi / 2) * short, y: c.y + sin(angle + .pi / 2) * short)
+            let r = CGPoint(x: c.x + cos(angle - .pi / 2) * short, y: c.y + sin(angle - .pi / 2) * short)
+            let left = NSBezierPath(); left.move(to: c); left.line(to: l); left.line(to: tip); left.close()
+            let right = NSBezierPath(); right.move(to: c); right.line(to: tip); right.line(to: r); right.close()
+            let north = i == 0
+            (north ? hex(0xFF8A3D) : hex(0x1F6F6A)).setFill(); left.fill()
+            (north ? hex(0xE8590C) : hex(0x0E4744)).setFill(); right.fill()
+        }
+        hex(0xF6F1E4).setFill(); circle(c, 18).fill()
     }
-    hex(0xF6F1E4).setFill(); circle(C, 22 * k).fill()
 }
 
 let json = """
@@ -78,7 +98,7 @@ let json = """
     },
     {
       "layers" : [
-        { "image-name" : "dial.png", "name" : "dial" }
+        { "image-name" : "folder.png", "name" : "folder" }
       ],
       "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
       "translucency" : { "enabled" : false, "value" : 0.5 }
