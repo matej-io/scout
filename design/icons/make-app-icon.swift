@@ -1,4 +1,4 @@
-// Builds Scout's Icon Composer icon (AppIcon.icon) from the Folder Compass design: the folder and the star
+// Builds Scout's Icon Composer icon (AppIcon.icon) from the Folder Needle design: the folder and the compass needle
 // as separate layers, so macOS 26 can mask the icon to its own shape and add Liquid Glass.
 // Usage: swift make-app-icon.swift <path/to/AppIcon.icon>
 import AppKit
@@ -62,11 +62,15 @@ layer("folder") {
 }
 
 layer("star") {
+    // North–south needle, tilted 45° counter-clockwise, nudged up-left towards the tab.
     tileSpace {
-        let c = CGPoint(x: 512, y: 482)   // centre of the folder body
-        let long: CGFloat = 196, short: CGFloat = 50
-        for i in 0..<4 {
-            let angle = CGFloat(i) * .pi / 2 + .pi / 2   // north first
+        let c = CGPoint(x: 498, y: 506)
+        let long: CGFloat = 250, short: CGFloat = 58
+        NSGraphicsContext.saveGraphicsState()
+        let t = NSAffineTransform()
+        t.translateX(by: c.x, yBy: c.y); t.rotate(byDegrees: 45); t.translateX(by: -c.x, yBy: -c.y)
+        t.concat()
+        for (i, angle) in [CGFloat.pi / 2, -CGFloat.pi / 2].enumerated() {   // north, then south
             let tip = CGPoint(x: c.x + cos(angle) * long, y: c.y + sin(angle) * long)
             let l = CGPoint(x: c.x + cos(angle + .pi / 2) * short, y: c.y + sin(angle + .pi / 2) * short)
             let r = CGPoint(x: c.x + cos(angle - .pi / 2) * short, y: c.y + sin(angle - .pi / 2) * short)
@@ -76,6 +80,7 @@ layer("star") {
             (north ? hex(0xFF8A3D) : hex(0x1F6F6A)).setFill(); left.fill()
             (north ? hex(0xE8590C) : hex(0x0E4744)).setFill(); right.fill()
         }
+        NSGraphicsContext.restoreGraphicsState()
         hex(0xF6F1E4).setFill(); circle(c, 18).fill()
     }
 }

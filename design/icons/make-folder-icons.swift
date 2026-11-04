@@ -1,5 +1,6 @@
 // Renders the Folder Compass variants of Scout's icon: the Compass design with the cream dial
-// replaced by a folder silhouette — one with the star upright, one tilted 20°.
+// replaced by a folder silhouette — the star upright, tilted 20° clockwise, tilted 45° counter-clockwise,
+// and a north–south needle tilted 45° counter-clockwise.
 // Usage: swift make-folder-icons.swift <output-dir>
 import AppKit
 
@@ -108,12 +109,13 @@ func folder() -> NSBezierPath {
     return p
 }
 
-func star(_ c: CGPoint, long: CGFloat, short: CGFloat, tilt: CGFloat) {
+/// Compass star rotated `tilt` degrees clockwise; `needle` keeps only the north and south arms.
+func star(_ c: CGPoint, long: CGFloat, short: CGFloat, tilt: CGFloat, needle: Bool = false) {
     NSGraphicsContext.saveGraphicsState()
     let t = NSAffineTransform()
     t.translateX(by: c.x, yBy: c.y); t.rotate(byDegrees: -tilt); t.translateX(by: -c.x, yBy: -c.y)
     t.concat()
-    for (i, arm) in compassStar(c, long: long, short: short).enumerated() {
+    for (i, arm) in compassStar(c, long: long, short: short).enumerated() where !needle || i < 2 || i == 4 || i == 5 {
         let north = i < 2
         let color: NSColor = north ? (i % 2 == 0 ? hex(0xFF8A3D) : hex(0xE8590C)) : (i % 2 == 0 ? hex(0x1F6F6A) : hex(0x0E4744))
         color.setFill(); arm.fill()
@@ -122,11 +124,17 @@ func star(_ c: CGPoint, long: CGFloat, short: CGFloat, tilt: CGFloat) {
     hex(0xF6F1E4).setFill(); circle(c, 18).fill()
 }
 
-for (name, tilt) in [("7-folder-compass", CGFloat(0)), ("8-folder-compass-tilted", CGFloat(20))] {
-    _ = icon(name, top: hex(0x14A39A), bottom: hex(0x0B5E5A)) { _ in
+let variants: [(name: String, tilt: CGFloat, needle: Bool, long: CGFloat, short: CGFloat, centre: CGPoint)] = [
+    ("7-folder-compass", 0, false, 196, 50, CGPoint(x: 512, y: 482)),
+    ("8-folder-compass-tilted", 20, false, 196, 50, CGPoint(x: 512, y: 482)),
+    ("9-folder-compass-45", -45, false, 196, 50, CGPoint(x: 512, y: 482)),
+    ("10-folder-needle-45", -45, true, 250, 58, CGPoint(x: 498, y: 506)),   // nudged up-left, towards the tab
+]
+for v in variants {
+    _ = icon(v.name, top: hex(0x14A39A), bottom: hex(0x0B5E5A)) { _ in
         let shape = folder()
         shadowed(alpha: 0.30, blur: 22, y: -10) { hex(0xF6F1E4).setFill(); shape.fill() }
-        star(CGPoint(x: 512, y: 482), long: 196, short: 50, tilt: tilt)
+        star(v.centre, long: v.long, short: v.short, tilt: v.tilt, needle: v.needle)
     }
 }
 print("ok")
