@@ -67,7 +67,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         indicator.wantsLayer = true
         indicator.isHidden = true
 
-        pathBar.onNavigate = { [weak self] ref in self?.navigate(to: .folder(ref)) }
+        pathBar.onNavigate = { [weak self] folder, item in self?.navigate(to: .folder(folder), select: item.map { [$0] } ?? []) }
         scopeBar.isHidden = true
         scopeBar.onSelectScope = { [weak self] scope in self?.setSearchScope(scope) }
         scopeBar.onSelectContents = { [weak self] contents in
@@ -335,17 +335,29 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         spinnerWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
 
+        var delivered = false
         let handle: (Result<[FileItem], Error>) -> Void = { [weak self] result in
             guard let self, token == self.loadToken else { return }
             self.isLoading = false
             self.spinnerWork?.cancel()
+            let refresh = delivered
+            delivered = true
             switch result {
             case .success(let items):
+                let sortedItems = self.sorted(items)
+                // A live search update that changes nothing shouldn't rebuild the view under the mouse.
+                if refresh, sortedItems.map(\.ref) == self.items.map(\.ref) {
+                    self.rawItems = items
+                    self.items = sortedItems
+                    return
+                }
                 self.rawItems = items
-                self.items = self.sorted(items)
+                self.items = sortedItems
                 self.hideMessage()
-                // Live search updates keep whatever the user has selected since.
+                // Live search updates keep whatever the user has selected since, and the view stays where it is.
+                self.isRefreshingListing = refresh
                 self.content.display(self.items, select: keepSelection ?? self.selectedItems.map(\.ref))
+                self.isRefreshingListing = false
                 keepSelection = nil
                 if self.items.isEmpty, self.searchQuery != nil { self.showMessage("No Results", spinner: false) }
             case .failure(let error):
@@ -365,13 +377,48 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
                 guard let self, token == self.loadToken else { return }
                 // Keep the spinner until there is something to show or the search is done.
                 if case .success(let items) = result, items.isEmpty, !finished { return }
-                handle(result)
+                // Results keep arriving while the user works with them. Hold an update back while the mouse
+                // is down, so a click or drag never lands on a row that moved under it.
+                if delivered {
+                    self.pendingSearchResult = (token, handle, result)
+                    self.deliverPendingSearchResult()
+                } else {
+                    handle(result)
+                }
             }
             if activeSearch == nil { handle(.success([])) }
         } else {
             FileService.list(location, showHidden: Prefs.shared.showHidden, completion: handle)
         }
     }
+
+    /// The latest live search update not shown yet, waiting for the mouse to be released.
+    private var pendingSearchResult: (token: Int, handle: (Result<[FileItem], Error>) -> Void, result: Result<[FileItem], Error>)?
+    private var pendingSearchTimer: Timer?
+
+    private func deliverPendingSearchResult() {
+        guard let pending = pendingSearchResult else { return }
+        guard pending.token == loadToken else {
+            pendingSearchResult = nil
+            return
+        }
+        if NSEvent.pressedMouseButtons != 0 {
+            guard pendingSearchTimer == nil else { return }
+            let timer = Timer(timeInterval: 0.1, repeats: false) { [weak self] _ in
+                self?.pendingSearchTimer = nil
+                self?.deliverPendingSearchResult()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            pendingSearchTimer = timer
+            return
+        }
+        pendingSearchResult = nil
+        pending.handle(pending.result)
+    }
+
+    /// True while the content shows an update of the listing it already has (a live search update),
+    /// rather than a new one; the view then keeps its scroll position.
+    private(set) var isRefreshingListing = false
 
     private static func describe(_ error: Error) -> String {
         let ns = error as NSError
@@ -394,9 +441,6 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         let key = sortKey
         let asc = ascending
         let foldersFirst = Prefs.shared.foldersFirst
-        func nameOrder(_ a: FileItem, _ b: FileItem) -> Bool {
-            a.displayName.localizedStandardCompare(b.displayName) == .orderedAscending
-        }
         return list.sorted { a, b in
             if foldersFirst && a.isBrowsable != b.isBrowsable { return a.isBrowsable }
             var result: ComparisonResult
@@ -418,7 +462,12 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
             case .tags:
                 result = (a.tags.first ?? "~").localizedStandardCompare(b.tags.first ?? "~")
             }
-            if result == .orderedSame { return nameOrder(a, b) }
+            if result == .orderedSame {
+                // Search results often share a name; their paths keep the order the same from one update to the next.
+                let byName = a.displayName.localizedStandardCompare(b.displayName)
+                if byName != .orderedSame { return byName == .orderedAscending }
+                return a.ref.path.localizedStandardCompare(b.ref.path) == .orderedAscending
+            }
             // Dates and sizes default to newest/largest first in Finder.
             let descendingByDefault = [.modified, .created, .lastOpened, .added, .size].contains(key)
             let ascendingResult = result == .orderedAscending
@@ -556,6 +605,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     private func updateScopeBar() {
         let searching = searchQuery != nil
         scopeBar.isHidden = !searching
+        updateBars()
         contentTopToRoot.isActive = !searching
         contentTopToScopeBar.isActive = searching
         if searching {
@@ -574,8 +624,10 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     // MARK: Status / bars
 
     private func updateBars() {
-        pathBar.isHidden = !Prefs.shared.showPathBar
-        pathBarHeight.constant = Prefs.shared.showPathBar ? 26 : 0
+        // Like Finder, search results always show where the selected item is.
+        let showPathBar = Prefs.shared.showPathBar || searchQuery != nil
+        pathBar.isHidden = !showPathBar
+        pathBarHeight.constant = showPathBar ? 26 : 0
         statusBar.isHidden = !Prefs.shared.showStatusBar
         statusBarHeight.constant = Prefs.shared.showStatusBar ? 28 : 0
         statusBar.iconSize = Prefs.shared.iconSize
@@ -618,9 +670,14 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     }
 
     private func updatePathBar() {
-        var ref = location.ref
-        if selectedItems.count == 1 { ref = selectedItems[0].ref }
-        pathBar.show(ref, fallbackTitle: location.title)
+        let selection = selectedItems
+        if selection.count == 1 {
+            pathBar.show(selection[0].ref, isFolder: selection[0].isBrowsable, fallbackTitle: nil)
+        } else if searchQuery != nil {
+            pathBar.show(nil, fallbackTitle: nil)   // Search results come from many folders.
+        } else {
+            pathBar.show(location.ref, fallbackTitle: location.title)
+        }
     }
 
     private func updateIndicator() {

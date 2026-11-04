@@ -217,7 +217,10 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
     func display(_ newItems: [FileItem], select refs: [ItemRef]?) {
         outline.cancelPendingRename()
         let scrollOrigin = scroll.contentView.bounds.origin
-        let sameFolder = newItems.first?.ref.parent == items.first?.ref.parent && !items.isEmpty
+        let refreshing = pane?.isRefreshingListing == true
+        let sameFolder = refreshing || newItems.first?.ref.parent == items.first?.ref.parent && !items.isEmpty
+        // Search results come and go above the visible rows; keep a row that stays in view where it was.
+        let anchor = refreshing ? visibleAnchor() : nil
         items = newItems
         suppressSelectionNotifications = true
         outline.reloadData()
@@ -228,8 +231,36 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         for item in items where wanted.contains(item.ref) { expand(item, restoring: wanted) }
         if let refs { selectRefs(refs, scroll: !sameFolder) }
         if sameFolder { scroll.contentView.scroll(to: scrollOrigin) }
+        if let anchor, let item = findItem(anchor.ref) {
+            let row = outline.row(forItem: item)
+            if row >= 0 {
+                let clip = scroll.contentView
+                let proposed = NSRect(origin: NSPoint(x: scrollOrigin.x, y: outline.rect(ofRow: row).minY - anchor.offset),
+                                      size: clip.bounds.size)
+                clip.scroll(to: clip.constrainBoundsRect(proposed).origin)
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+        }
         suppressSelectionNotifications = false
         pane?.selectionDidChange()
+    }
+
+    /// A row on screen and its distance from the top of the visible area: the selected row the mouse
+    /// is most likely on, else the first one in view.
+    private func visibleAnchor() -> (ref: ItemRef, offset: CGFloat)? {
+        let visible = scroll.contentView.bounds
+        let range = outline.rows(in: visible)
+        guard range.length > 0 else { return nil }
+        let rows = range.location..<(range.location + range.length)
+        var row = rows.first { outline.selectedRowIndexes.contains($0) && visible.contains(NSPoint(x: visible.midX, y: outline.rect(ofRow: $0).midY)) }
+        if let window = view.window {
+            let mouse = outline.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            let hovered = outline.row(at: mouse)
+            if outline.selectedRowIndexes.contains(hovered), rows.contains(hovered) { row = hovered }
+        }
+        guard let row = row ?? rows.first(where: { outline.rect(ofRow: $0).minY >= visible.minY }) ?? rows.first,
+              let item = outline.item(atRow: row) as? FileItem else { return nil }
+        return (item.ref, outline.rect(ofRow: row).minY - visible.minY)
     }
 
     var selectedItems: [FileItem] {
