@@ -22,6 +22,8 @@ A native macOS clone of Finder, built with AppKit, that adds two things Finder d
 
 Search (⌘F) works like Finder's and uses Spotlight, with results arriving as they're found and updating live. A scope bar under the toolbar chooses where to look: **This Mac**, the **disk** the folder is on, or the **current folder**. On the right you choose between **Name & Contents** (Finder's default, matching words in names, contents and metadata) and **Name Only**. Which scope a new search starts with follows `searchScope` in the [configuration file](#configuration), initialised from Finder's "When performing a search" setting.
 
+While searching, a path bar at the bottom shows where the selected result is, even when the path bar is turned off. Click a folder in it to open that folder, or the file itself to show it in its folder. The list stays still while results update: a click never lands on a row that moved, and the selected row keeps its place.
+
 In an SSH folder, the scopes are the **server** and the **current folder**. Scout runs `find` (names) and `grep` (contents) on the server, limited to 30 seconds and 3,000 results.
 
 ## Go to Folder

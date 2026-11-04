@@ -80,8 +80,10 @@ final class StatusBarView: NSView {
 final class PathBarView: NSView {
     private let pathControl = NSPathControl()
     private let separator = NSBox()
-    var onNavigate: ((ItemRef) -> Void)?
+    /// Opens a folder, selecting an item in it (the next one along the path, or the file shown last).
+    var onNavigate: ((_ folder: ItemRef, _ select: ItemRef?) -> Void)?
     private var refs: [ItemRef] = []
+    private var lastIsFolder = true
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -110,7 +112,8 @@ final class PathBarView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func show(_ ref: ItemRef?, fallbackTitle: String) {
+    func show(_ ref: ItemRef?, isFolder: Bool = true, fallbackTitle: String?) {
+        lastIsFolder = isFolder
         var chain: [ItemRef] = []
         var current = ref
         while let c = current {
@@ -141,7 +144,7 @@ final class PathBarView: NSView {
             item.image = copy
             return item
         }
-        if chain.isEmpty {
+        if chain.isEmpty, let fallbackTitle {
             let item = NSPathControlItem()
             item.title = fallbackTitle
             pathControl.pathItems = [item]
@@ -151,11 +154,12 @@ final class PathBarView: NSView {
     @objc private func clicked() {
         guard let clicked = pathControl.clickedPathItem, let index = pathControl.pathItems.firstIndex(of: clicked), index < refs.count else { return }
         let ref = refs[index]
-        if index == refs.count - 1, case .local(let url) = ref,
-           (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true {
-            return
+        if index == refs.count - 1 {
+            // A file opens its folder with the file selected.
+            if lastIsFolder { onNavigate?(ref, nil) } else if let parent = ref.parent { onNavigate?(parent, ref) }
+        } else {
+            onNavigate?(ref, refs[index + 1])
         }
-        onNavigate?(ref)
     }
 }
 
