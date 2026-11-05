@@ -88,7 +88,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     private var navGroup: NSToolbarItemGroup?
     private var viewGroup: NSToolbarItemGroup?
-    private var searchItem: NSSearchToolbarItem?
+    private(set) var searchItem: NSSearchToolbarItem?
     private var updateItem: NSToolbarItem?
     private var previewURLs: [URL] = []
     private lazy var shareConfiguration = ShareConfiguration { [weak self] in
@@ -337,7 +337,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             item.searchField.delegate = self
             item.searchField.target = self
             item.searchField.action = #selector(searchChanged(_:))
-            item.searchField.sendsSearchStringImmediately = false
+            item.searchField.sendsSearchStringImmediately = true   // debounced in searchChanged(_:)
             searchItem = item
             return item
 
@@ -408,11 +408,32 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         activePane.setViewMode(mode)
     }
 
+    private var pendingSearch: DispatchWorkItem?
+    /// How long typing has to pause before the search runs.
+    private static let searchDelay: TimeInterval = 0.4
+
+    /// The field reports every keystroke; the search runs once typing pauses, so each letter doesn't start
+    /// a new Spotlight query. Return, and clearing the field, take effect straight away.
     @objc private func searchChanged(_ sender: NSSearchField) {
-        activePane.search(sender.stringValue)
+        pendingSearch?.cancel()
+        pendingSearch = nil
+        let text = sender.stringValue
+        let pressedReturn = NSApp.currentEvent.map { $0.type == .keyDown && ($0.keyCode == 36 || $0.keyCode == 76) } ?? false
+        if pressedReturn || text.trimmingCharacters(in: .whitespaces).isEmpty {
+            activePane.search(text)
+            return
+        }
+        let work = DispatchWorkItem { [weak self, weak pane = activePane] in
+            self?.pendingSearch = nil
+            pane?.search(text)
+        }
+        pendingSearch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + MainWindowController.searchDelay, execute: work)
     }
 
     func searchFieldDidEndSearching(_ sender: NSSearchField) {
+        pendingSearch?.cancel()
+        pendingSearch = nil
         activePane.search("")
     }
 

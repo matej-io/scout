@@ -218,7 +218,9 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         outline.cancelPendingRename()
         let scrollOrigin = scroll.contentView.bounds.origin
         let refreshing = pane?.isRefreshingListing == true
-        let sameFolder = refreshing || newItems.first?.ref.parent == items.first?.ref.parent && !items.isEmpty
+        // Search results come from many folders: only their live updates count as the same listing.
+        let sameFolder = refreshing
+            || pane?.searchQuery == nil && newItems.first?.ref.parent == items.first?.ref.parent && !items.isEmpty
         // Search results come and go above the visible rows; keep a row that stays in view where it was.
         let anchor = refreshing ? visibleAnchor() : nil
         items = newItems
@@ -230,7 +232,11 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         expandedRefs = []
         for item in items where wanted.contains(item.ref) { expand(item, restoring: wanted) }
         if let refs { selectRefs(refs, scroll: !sameFolder) }
-        if sameFolder { scroll.contentView.scroll(to: scrollOrigin) }
+        if sameFolder {
+            scroll.contentView.scroll(to: scrollOrigin)
+        } else if outline.selectedRowIndexes.isEmpty, outline.numberOfRows > 0 {
+            outline.scrollRowToVisible(0)   // a new listing (or new search) starts at the top
+        }
         if let anchor, let item = findItem(anchor.ref) {
             let row = outline.row(forItem: item)
             if row >= 0 {
@@ -245,8 +251,9 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         pane?.selectionDidChange()
     }
 
-    /// A row on screen and its distance from the top of the visible area: the selected row the mouse
-    /// is most likely on, else the first one in view.
+    /// A selected row on screen and its distance from the top of the visible area (the one under the mouse,
+    /// if several are). Without one, the list keeps its scroll position, so results that arrive while it's
+    /// at the top appear at the top rather than pushing the view down.
     private func visibleAnchor() -> (ref: ItemRef, offset: CGFloat)? {
         let visible = scroll.contentView.bounds
         let range = outline.rows(in: visible)
@@ -258,8 +265,7 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
             let hovered = outline.row(at: mouse)
             if outline.selectedRowIndexes.contains(hovered), rows.contains(hovered) { row = hovered }
         }
-        guard let row = row ?? rows.first(where: { outline.rect(ofRow: $0).minY >= visible.minY }) ?? rows.first,
-              let item = outline.item(atRow: row) as? FileItem else { return nil }
+        guard let row, let item = outline.item(atRow: row) as? FileItem else { return nil }
         return (item.ref, outline.rect(ofRow: row).minY - visible.minY)
     }
 

@@ -25,6 +25,86 @@ enum SelfTest {
         }
     }
 
+    /// SCOUT_SEARCHTEST=<text>: types a search like a person would, waits for the results, then clicks a file
+    /// in the list with real mouse events. The click must select that file, and the results must stay put.
+    static func runSearch(_ query: String) {
+        func at(_ t: TimeInterval, _ block: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block) }
+        func log(_ text: String) { NSLog("SEARCHTEST %@", text) }
+        func finish() { at(0.5) { NSApp.terminate(nil) } }
+        at(1.0) {
+            guard let window = NSApp.windows.first(where: { $0.windowController is MainWindowController }),
+                  let controller = window.windowController as? MainWindowController,
+                  let field = controller.searchItem?.searchField else { log("FAIL no window"); finish(); return }
+            let pane = controller.activePane!
+            pane.setViewMode(.list)
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(field)
+            let started = PaneViewController.searchesStarted
+            // Type one letter every 0.25 s, like unhurried typing.
+            for (i, ch) in query.enumerated() {
+                at(Double(i) * 0.25) {
+                    let s = String(ch)
+                    for type in [NSEvent.EventType.keyDown, .keyUp] {
+                        if let e = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                    windowNumber: window.windowNumber, context: nil, characters: s,
+                                                    charactersIgnoringModifiers: s, isARepeat: false, keyCode: 0) {
+                            window.sendEvent(e)
+                        }
+                    }
+                }
+            }
+            // SCOUT_SEARCHTEST_WAIT: seconds between the last letter and the click (default 4; less clicks while results still arrive).
+            let wait = Double(ProcessInfo.processInfo.environment["SCOUT_SEARCHTEST_WAIT"] ?? "") ?? 4
+            at(Double(query.count) * 0.25 + wait) {
+                let typed = PaneViewController.searchesStarted - started
+                log("typing started \(typed) searches for \(query.count) letters; field “\(field.stringValue)”, query \(pane.searchQuery ?? "nil"), scope \(pane.searchScope), loading \(pane.isLoading)")
+                let outline = pane.content.focusView as! NSOutlineView
+                let visible = outline.rows(in: outline.visibleRect)
+                log("first visible row \(visible.location) (expect 0: results start at the top)")
+                let rows = (visible.location..<visible.location + visible.length).filter {
+                    (outline.item(atRow: $0) as? FileItem)?.isBrowsable == false && outline.visibleRect.contains(outline.rect(ofRow: $0))
+                }
+                guard let row = rows.first, let item = outline.item(atRow: row) as? FileItem else {
+                    log("FAIL no file in results (\(pane.items.count) items)"); finish(); return
+                }
+                let count = pane.items.count
+                let before = PaneViewController.searchesStarted
+                let rect = outline.rect(ofRow: row)
+                let point = outline.convert(NSPoint(x: rect.minX + 60, y: rect.midY), to: nil)
+                let screenY = outline.convert(rect, to: nil).minY
+                log("results \(count), clicking row \(row) \(item.name) at \(point) (row in window y \(screenY))")
+                // The table tracks the mouse after a mouse down, so queue the mouse up first.
+                let up = NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)!
+                let down = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+                NSApp.postEvent(up, atStart: false)
+                window.sendEvent(down)
+                var samples: [String] = []
+                for t in stride(from: 0.1, through: 3.0, by: 0.1) {
+                    at(t) {
+                        let selected = pane.selectedItems.map(\.name)
+                        let row = outline.row(forItem: item)
+                        let y = row >= 0 ? outline.convert(outline.rect(ofRow: row), to: nil).minY : -1
+                        samples.append(String(format: "%.1f:%@/%d/%.0f", t, selected.first ?? "-", pane.items.count, y))
+                    }
+                }
+                at(3.2) {
+                    let selected = pane.selectedItems.map(\.ref)
+                    let restarted = PaneViewController.searchesStarted - before
+                    let row = outline.row(forItem: item)
+                    let y = row >= 0 ? outline.convert(outline.rect(ofRow: row), to: nil).minY : -1
+                    log("samples (time:selection/results/row y) " + samples.joined(separator: " "))
+                    log("after click: selected \(pane.selectedItems.map(\.name)), results \(pane.items.count), searches restarted \(restarted), row y \(y)")
+                    let ok = selected == [item.ref] && restarted == 0 && abs(y - screenY) < 1 && visible.location == 0 && typed == 1
+                    log(ok ? "PASS" : "FAIL")
+                    finish()
+                }
+            }
+        }
+    }
+
     static func run(host: String) {
         let queue = DispatchQueue(label: "selftest")
         queue.async {

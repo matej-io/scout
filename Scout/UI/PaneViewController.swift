@@ -372,6 +372,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         }
 
         if let query = searchQuery, !query.isEmpty {
+            PaneViewController.searchesStarted += 1
             activeSearch = FileService.search(query, scope: searchScope, in: location, contents: Prefs.shared.searchContents,
                                               showHidden: Prefs.shared.showHidden) { [weak self] result, finished in
                 guard let self, token == self.loadToken else { return }
@@ -391,6 +392,9 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
             FileService.list(location, showHidden: Prefs.shared.showHidden, completion: handle)
         }
     }
+
+    /// How many searches have been started, for SCOUT_SEARCHTEST.
+    static var searchesStarted = 0
 
     /// The latest live search update not shown yet, waiting for the mouse to be released.
     private var pendingSearchResult: (token: Int, handle: (Result<[FileItem], Error>) -> Void, result: Result<[FileItem], Error>)?
@@ -547,8 +551,12 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
 
     func search(_ query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
+        let newQuery = trimmed.isEmpty ? nil : trimmed
+        // The search field also reports its text when it loses focus, e.g. on a click in the results.
+        // Starting the same search again would replace the results with the first partial batch and drop the selection.
+        guard newQuery != searchQuery else { return }
         let wasSearching = searchQuery != nil
-        searchQuery = trimmed.isEmpty ? nil : trimmed
+        searchQuery = newQuery
         if searchQuery != nil && !wasSearching { searchScope = defaultSearchScope }
         updateScopeBar()
         reload()
