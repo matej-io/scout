@@ -17,7 +17,7 @@ enum FileOps {
             case .local(let url):
                 do {
                     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-                    result = .success(target)
+                    result = .success(settled(target))
                 } catch { result = .failure(error) }
             case .remote(let host, let path):
                 result = remote(host, "mkdir -- \(shq(path))").map { target }
@@ -40,7 +40,7 @@ enum FileOps {
                         throw ScoutError("The name “\(newName)” is already taken. Please choose a different name.")
                     }
                     try FileManager.default.moveItem(at: from, to: to)
-                    result = .success(target)
+                    result = .success(settled(target))
                 } catch { result = .failure(error) }
             case (.remote(let host, let from), .remote(_, let to)):
                 let cmd = "if [ -e \(shq(to)) ]; then echo 'The name “\(newName.replacingOccurrences(of: "'", with: ""))” is already taken. Please choose a different name.' >&2; exit 17; fi; mv -- \(shq(from)) \(shq(to))"
@@ -90,7 +90,7 @@ enum FileOps {
                 let target = parent.appending(name)
                 switch (item.ref, target) {
                 case (.local(let from), .local(let to)):
-                    do { try FileManager.default.copyItem(at: from, to: to); created.append(target) } catch { failure = error }
+                    do { try FileManager.default.copyItem(at: from, to: to); created.append(settled(target)) } catch { failure = error }
                 case (.remote(let host, let from), .remote(_, let to)):
                     switch remote(host, "cp -Rp -- \(shq(from)) \(shq(to))") {
                     case .success: created.append(target)
@@ -100,6 +100,7 @@ enum FileOps {
                 }
             }
             let result: Result<[ItemRef], Error> = failure.map { .failure($0) } ?? .success(created)
+            if failure == nil, !created.isEmpty { DispatchQueue.main.async { UISound.play(UISound.copy) } }
             finish(result, changed: [parent], completion: completion)
         }
     }
@@ -205,15 +206,24 @@ enum FileOps {
     private static func perform(_ sources: [ItemRef], to destination: ItemRef, move: Bool, policy: ConflictPolicy,
                                 existing: Set<String>, sameFolder: Set<ItemRef>, completion: (([ItemRef]) -> Void)?) {
         let title = sources.count == 1 ? "“\(sources[0].name)”" : "\(sources.count) items"
-        let activity = Activity.shared.begin("\(move ? "Moving" : "Copying") \(title) to “\(destination.name)”…")
+        let description = "\(move ? "Moving" : "Copying") \(title) to “\(destination.name)”"
+        let activity = Activity.shared.begin(description + "…")
+        let progress = TransferProgress(title: description, move: move)
+        ProgressWindowController.shared.track(progress)
         queue.async {
             var names = existing
             var created: [ItemRef] = []
             var errors: [String] = []
             var changed: Set<ItemRef> = [destination]
             var undoMoves: [(from: URL, to: URL)] = []
+            let sizes = measure(sources, to: destination, move: move, progress: progress)
+            progress.total = sizes.flatMap { sizes in
+                let total = sizes.values.reduce(0, +)
+                return total > 0 ? total : nil
+            }
 
             for src in sources {
+                if progress.isCancelled { break }
                 var name = src.name
                 if sameFolder.contains(src) {
                     if move { continue }
@@ -228,20 +238,32 @@ enum FileOps {
                 }
                 names.insert(name)
                 let target = destination.appending(name)
-                switch copyOne(src, to: target, move: move) {
+                let before = progress.completed
+                switch copyOne(src, to: target, move: move, progress: progress) {
                 case .success:
-                    created.append(target)
+                    // Clones and other quiet copies don't report as they go; count the item as done.
+                    if let size = sizes?[src] { progress.add(size - (progress.completed - before)) }
+                    created.append(settled(target))
                     if let p = src.parent, move { changed.insert(p) }
                     if move, case .local(let a) = src, case .local(let b) = target { undoMoves.append((a, b)) }
                 case .failure(let error):
-                    errors.append(error.localizedDescription)
+                    if progress.isCancelled {
+                        // Like Finder, a stopped copy doesn't leave a half-copied item behind.
+                        // A move whose source is already gone did finish, so its target stays.
+                        if !move || exists(src) { removePartial(target) }
+                    } else {
+                        errors.append(error.localizedDescription)
+                    }
                 }
             }
 
             DispatchQueue.main.async {
+                progress.finish()
+                ProgressWindowController.shared.finished(progress)
                 Activity.shared.end(activity)
                 FileService.notifyChanged(Array(changed))
                 registerUndo(move: move, created: created, undoMoves: undoMoves)
+                if !created.isEmpty, errors.isEmpty, !progress.isCancelled { UISound.play(UISound.copy) }
                 if !errors.isEmpty {
                     let alert = NSAlert()
                     alert.messageText = "The operation can’t be completed."
@@ -286,24 +308,29 @@ enum FileOps {
     }
 
     /// Copies (or moves) a single item to an exact target path.
-    private static func copyOne(_ src: ItemRef, to target: ItemRef, move: Bool) -> Result<Void, Error> {
+    private static func copyOne(_ src: ItemRef, to target: ItemRef, move: Bool, progress: TransferProgress?) -> Result<Void, Error> {
         switch (src, target) {
         case (.local(let from), .local(let to)):
-            do {
-                if move { try FileManager.default.moveItem(at: from, to: to) } else { try FileManager.default.copyItem(at: from, to: to) }
-                return .success(())
-            } catch { return .failure(error) }
+            if move, sameVolume(from, to.deletingLastPathComponent()) {
+                do { try FileManager.default.moveItem(at: from, to: to); return .success(()) } catch { return .failure(error) }
+            }
+            // Copying (or moving to another disk, which copies and then deletes) reports progress as it goes.
+            let result = copyLocal(from, to: to, progress: progress)
+            if move, case .success = result {
+                do { try FileManager.default.removeItem(at: from) } catch { return .failure(error) }
+            }
+            return result
 
         case (.remote(let h1, let from), .remote(let h2, let to)) where h1 == h2:
-            return remote(h1, "\(move ? "mv" : "cp -Rp") -- \(shq(from)) \(shq(to))")
+            return remote(h1, "\(move ? "mv" : "cp -Rp") -- \(shq(from)) \(shq(to))", progress: progress)
 
         case (.local(let from), .remote(let host, let to)):
-            let result = upload(from, host: host, to: to)
+            let result = upload(from, host: host, to: to, progress: progress)
             if move, case .success = result { try? FileManager.default.removeItem(at: from) }
             return result
 
         case (.remote(let host, let from), .local(let to)):
-            let result = download(host: host, path: from, to: to)
+            let result = download(host: host, path: from, to: to, progress: progress)
             if move, case .success = result { _ = remote(host, "rm -rf -- \(shq(from))") }
             return result
 
@@ -313,18 +340,168 @@ enum FileOps {
             try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: tmp) }
             let staged = tmp.appendingPathComponent((from as NSString).lastPathComponent)
-            if case .failure(let e) = download(host: h1, path: from, to: staged) { return .failure(e) }
-            let result = upload(staged, host: h2, to: to)
+            if case .failure(let e) = download(host: h1, path: from, to: staged, progress: progress) { return .failure(e) }
+            let result = upload(staged, host: h2, to: to, progress: progress)
             if move, case .success = result { _ = remote(h1, "rm -rf -- \(shq(from))") }
             return result
         }
+    }
+
+    // MARK: Progress
+
+    /// The bytes each item will take to transfer, for the progress bar. Nil when that can't be told in advance
+    /// (copies within one server). Moves within one disk count as nothing, since they're instant.
+    private static func measure(_ sources: [ItemRef], to destination: ItemRef, move: Bool, progress: TransferProgress) -> [ItemRef: Int64]? {
+        var sizes: [ItemRef: Int64] = [:]
+        for src in sources {
+            if progress.isCancelled { return nil }
+            switch (src, destination) {
+            case (.local(let from), .local(let to)):
+                sizes[src] = move && sameVolume(from, to) ? 0 : localSize(from, progress: progress)
+            case (.local(let from), .remote):
+                sizes[src] = localSize(from, progress: progress)
+            case (.remote(let host, let path), .local):
+                guard let size = remoteSize(host, path) else { return nil }
+                sizes[src] = size
+            case (.remote(let h1, let path), .remote(let h2, _)):
+                guard h1 != h2, let size = remoteSize(h1, path) else { return nil }
+                sizes[src] = 2 * size   // downloaded, then uploaded again
+            }
+        }
+        return sizes
+    }
+
+    private static func localSize(_ url: URL, progress: TransferProgress) -> Int64 {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey]
+        guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return 0 }
+        if values.isRegularFile == true { return Int64(values.fileSize ?? 0) }
+        guard values.isDirectory == true, values.isSymbolicLink != true,
+              let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys, options: [],
+                                                              errorHandler: { _, _ in true }) else { return 0 }
+        var total: Int64 = 0
+        var count = 0
+        for case let item as URL in enumerator {
+            count += 1
+            if count % 1000 == 0, progress.isCancelled { break }
+            guard let v = try? item.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]), v.isRegularFile == true else { continue }
+            total += Int64(v.fileSize ?? 0)
+        }
+        return total
+    }
+
+    private static func remoteSize(_ host: String, _ path: String) -> Int64? {
+        let result = SSHManager.shared.host(host).runSync("du -sk -- \(shq(path)) 2>/dev/null")
+        guard let field = result.stdoutString.split(whereSeparator: \.isWhitespace).first, let kb = Int64(field) else { return nil }
+        return kb * 1024
+    }
+
+    private static func sameVolume(_ a: URL, _ b: URL) -> Bool {
+        let key = URLResourceKey.volumeIdentifierKey
+        guard let va = try? a.resourceValues(forKeys: [key]).volumeIdentifier as? NSObject,
+              let vb = try? b.resourceValues(forKeys: [key]).volumeIdentifier as? NSObject else { return false }
+        return va.isEqual(vb)
+    }
+
+    private static func exists(_ ref: ItemRef) -> Bool {
+        switch ref {
+        case .local(let url): return (try? url.checkResourceIsReachable()) ?? false
+        case .remote(let host, let path): return SSHManager.shared.host(host).runSync("test -e \(shq(path)) || test -L \(shq(path))").ok
+        }
+    }
+
+    private static func removePartial(_ ref: ItemRef) {
+        switch ref {
+        case .local(let url): try? FileManager.default.removeItem(at: url)
+        case .remote(let host, let path): _ = remote(host, "rm -rf -- \(shq(path))")
+        }
+    }
+
+    /// What the copyfile callback needs: the shared progress, and how much of the current file it has counted.
+    private final class CopyContext {
+        let progress: TransferProgress?
+        var fileCounted: Int64 = 0
+        init(_ progress: TransferProgress?) { self.progress = progress }
+
+        func count(_ bytes: Int64) { progress?.add(bytes) }
+    }
+
+    private static let copyCallback: copyfile_callback_t = { what, stage, state, src, _, ctx in
+        guard let ctx else { return COPYFILE_CONTINUE }
+        let context = Unmanaged<CopyContext>.fromOpaque(ctx).takeUnretainedValue()
+        if context.progress?.isCancelled == true { return COPYFILE_QUIT }
+        switch (Int(what), Int(stage)) {
+        case (Int(COPYFILE_RECURSE_FILE), Int(COPYFILE_START)):
+            context.fileCounted = 0
+        case (Int(COPYFILE_COPY_DATA), Int(COPYFILE_PROGRESS)):
+            var copied: off_t = 0
+            if copyfile_state_get(state, UInt32(COPYFILE_STATE_COPIED), &copied) == 0 {
+                context.count(Int64(copied) - context.fileCounted)
+                context.fileCounted = max(context.fileCounted, Int64(copied))
+            }
+        case (Int(COPYFILE_RECURSE_FILE), Int(COPYFILE_FINISH)):
+            // Cloned and very small files don't report data progress; count them whole.
+            var info = stat()
+            if let src, lstat(src, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG {
+                context.count(Int64(info.st_size) - context.fileCounted)
+            }
+            context.fileCounted = 0
+        default:
+            break
+        }
+        return COPYFILE_CONTINUE
+    }
+
+    /// Copies a file or folder on this Mac the way Finder does (cloning where the disk allows it),
+    /// counting bytes into `progress` and stopping when it's cancelled.
+    private static func copyLocal(_ from: URL, to: URL, progress: TransferProgress?) -> Result<Void, Error> {
+        guard let state = copyfile_state_alloc() else { return .failure(ScoutError("Couldn’t copy “\(from.lastPathComponent)”.")) }
+        defer { copyfile_state_free(state) }
+        let context = CopyContext(progress)
+        let unmanaged = Unmanaged.passRetained(context)
+        defer { unmanaged.release() }
+        copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CB), unsafeBitCast(copyCallback, to: UnsafeRawPointer.self))
+        copyfile_state_set(state, UInt32(COPYFILE_STATE_STATUS_CTX), unmanaged.toOpaque())
+        let flags = copyfile_flags_t(COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_CLONE | COPYFILE_NOFOLLOW_SRC)
+        let status = copyfile(from.path, to.path, state, flags)
+        let code = errno
+        if progress?.isCancelled == true { return .failure(CocoaError(.userCancelled)) }
+        if status < 0 {
+            let reason = String(cString: strerror(code))
+            return .failure(ScoutError("Couldn’t copy “\(from.lastPathComponent)”: \(reason)."))
+        }
+        return .success(())
+    }
+
+    /// Passes data from one pipe to another, counting it. Writes never raise SIGPIPE: if the reader goes away,
+    /// `broken` runs (to stop the writer) and the relay keeps draining its input so nothing upstream blocks.
+    private static func relay(from input: FileHandle, to output: FileHandle, progress: TransferProgress?,
+                              broken: @escaping () -> Void) -> DispatchGroup {
+        _ = fcntl(output.fileDescriptor, F_SETNOSIGPIPE, 1)
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            var writing = true
+            while let data = try? input.read(upToCount: 256 * 1024), !data.isEmpty {
+                guard writing else { continue }
+                do {
+                    try output.write(contentsOf: data)
+                    progress?.add(Int64(data.count))
+                } catch {
+                    writing = false
+                    broken()
+                }
+            }
+            try? output.close()
+            group.leave()
+        }
+        return group
     }
 
     // MARK: SSH transfers (tar streams, so folders, permissions and odd names all survive)
 
     private static let tarFlags = ["--no-mac-metadata", "--no-xattrs", "--no-acls"]
 
-    static func upload(_ local: URL, host: String, to remotePath: String) -> Result<Void, Error> {
+    static func upload(_ local: URL, host: String, to remotePath: String, progress: TransferProgress? = nil) -> Result<Void, Error> {
         let ssh = SSHManager.shared.host(host)
         let parent = local.deletingLastPathComponent().path
         let name = local.lastPathComponent
@@ -338,17 +515,33 @@ enum FileOps {
         tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         tar.arguments = ["-c", "-f", "-"] + tarFlags + ["-C", parent, name]
         tar.environment = ["COPYFILE_DISABLE": "1"]
-        let pipe = Pipe()
-        tar.standardOutput = pipe
+        let tarOut = Pipe()
+        let sshIn = Pipe()
+        tar.standardOutput = tarOut
         tar.standardError = FileHandle.nullDevice
         do { try tar.run() } catch { return .failure(error) }
-        let result = ssh.runSync(script, input: pipe)
+        progress?.setCancelHandler { if tar.isRunning { tar.terminate() } }
+        let relayed = relay(from: tarOut.fileHandleForReading, to: sshIn.fileHandleForWriting, progress: progress) {
+            if tar.isRunning { tar.terminate() }
+        }
+        let result = ssh.runSync(script, input: sshIn) { process in
+            progress?.setCancelHandler {
+                process.terminate()
+                if tar.isRunning { tar.terminate() }
+            }
+        }
+        progress?.setCancelHandler(nil)
+        // If ssh never ran or quit early, make sure the relay and tar can finish.
+        if tar.isRunning, !result.ok { tar.terminate() }
+        try? sshIn.fileHandleForReading.close()
+        relayed.wait()
         tar.waitUntilExit()
+        if progress?.isCancelled == true { return .failure(CocoaError(.userCancelled)) }
         if !result.ok { return .failure(ScoutError(SSHHost.cleanError(result.stderrString, fallback: "Couldn’t upload “\(name)”."))) }
         return .success(())
     }
 
-    static func download(host: String, path: String, to local: URL) -> Result<Void, Error> {
+    static func download(host: String, path: String, to local: URL, progress: TransferProgress? = nil) -> Result<Void, Error> {
         let ssh = SSHManager.shared.host(host)
         let fm = FileManager.default
         let staging: URL
@@ -365,13 +558,31 @@ enum FileOps {
         let untar = Process()
         untar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         untar.arguments = ["-x", "-f", "-", "-C", staging.path]
-        let pipe = Pipe()
-        untar.standardInput = pipe
+        let sshOut = Pipe()
+        let untarIn = Pipe()
+        untar.standardInput = untarIn
         let untarErr = Pipe()
         untar.standardError = untarErr
         do { try untar.run() } catch { return .failure(error) }
-        let result = ssh.runSync("tar -cf - -C \(shq(parent.isEmpty ? "/" : parent)) -- \(shq(name))", output: pipe)
+        var sshProcess: Process?
+        let lock = NSLock()
+        let relayed = relay(from: sshOut.fileHandleForReading, to: untarIn.fileHandleForWriting, progress: progress) {
+            lock.lock(); let process = sshProcess; lock.unlock()
+            process?.terminate()
+        }
+        let result = ssh.runSync("tar -cf - -C \(shq(parent.isEmpty ? "/" : parent)) -- \(shq(name))", output: sshOut) { process in
+            lock.lock(); sshProcess = process; lock.unlock()
+            progress?.setCancelHandler {
+                process.terminate()
+                if untar.isRunning { untar.terminate() }
+            }
+        }
+        progress?.setCancelHandler(nil)
+        // If ssh never started, nothing closes the pipe's write end; do it so the relay sees the end.
+        try? sshOut.fileHandleForWriting.close()
+        relayed.wait()
         untar.waitUntilExit()
+        if progress?.isCancelled == true { return .failure(CocoaError(.userCancelled)) }
         if !result.ok {
             return .failure(ScoutError(SSHHost.cleanError(result.stderrString, fallback: "Couldn’t download “\(name)”.")))
         }
@@ -405,9 +616,18 @@ enum FileOps {
 
     // MARK: Helpers
 
-    private static func remote(_ host: String, _ command: String) -> Result<Void, Error> {
+    /// A local ref made before its item existed lacks the trailing slash a folder's URL gets once it's on disk,
+    /// so it wouldn't match the folder in a listing (to select it or rename it). Rebuilt afterwards, it does.
+    private static func settled(_ ref: ItemRef) -> ItemRef {
+        guard case .local(let url) = ref else { return ref }
+        return .local(url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent))
+    }
+
+    private static func remote(_ host: String, _ command: String, progress: TransferProgress? = nil) -> Result<Void, Error> {
         let ssh = SSHManager.shared.host(host)
-        let result = ssh.runSync(command)
+        let result = ssh.runSync(command) { process in progress?.setCancelHandler { process.terminate() } }
+        progress?.setCancelHandler(nil)
+        if progress?.isCancelled == true { return .failure(CocoaError(.userCancelled)) }
         if result.ok { return .success(()) }
         return .failure(ScoutError(SSHHost.cleanError(result.stderrString, fallback: "The operation couldn’t be completed on “\(ssh.displayName)”.")))
     }

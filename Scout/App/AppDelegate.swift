@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSApp.activate()
         if ProcessInfo.processInfo.environment["SCOUT_SPRINGTEST"] != nil { SelfTest.runSpring() }
         if let query = ProcessInfo.processInfo.environment["SCOUT_SEARCHTEST"] { SelfTest.runSearch(query) }
+        if let folder = ProcessInfo.processInfo.environment["SCOUT_OPSTEST"] { SelfTest.runOps(folder: folder) }
         if let host = ProcessInfo.processInfo.environment["SCOUT_SELFTEST"] {
             SelfTest.run(host: host)
         }
