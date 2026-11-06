@@ -320,6 +320,13 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     // MARK: Loading
 
     func reload(select: [ItemRef]? = nil) {
+        // A change on disk (often the new folder itself, seen by the watcher) mustn't rebuild the view
+        // while a name is being typed; it's picked up once editing ends.
+        if select == nil, content.isEditingName {
+            reloadAfterEditing = true
+            return
+        }
+        reloadAfterEditing = false
         loadToken += 1
         let token = loadToken
         activeSearch?.cancel()
@@ -772,6 +779,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name != item.name, !name.contains("/") else { return }
         let oldName = item.name
+        reloadAfterEditing = false   // the rename reloads anyway
         FileOps.rename(item.ref, to: name) { [weak self] result in
             switch result {
             case .success(let newRef):
@@ -791,6 +799,14 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     }
 
     private var pendingSelection: [ItemRef] = []
+    private var reloadAfterEditing = false
+
+    /// Inline renaming finished (committed or cancelled). Catches up on changes held back meanwhile.
+    func nameEditingEnded() {
+        guard reloadAfterEditing else { return }
+        reloadAfterEditing = false
+        reload()
+    }
 
     func showError(_ error: Error) {
         guard let window = view.window else { NSAlert(error: error).runModal(); return }
@@ -900,8 +916,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     }
 
     private static func playTrashSound() {
-        let path = "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/dock/drag to trash.aif"
-        NSSound(contentsOfFile: path, byReference: true)?.play()
+        UISound.play(UISound.trash)
     }
 
     private func confirmRemoteDelete(_ targets: [FileItem]) {

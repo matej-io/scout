@@ -8,6 +8,8 @@ protocol BrowserContent: NSViewController {
     var selectedItems: [FileItem] { get }
     func select(_ refs: [ItemRef])
     func beginRename(_ ref: ItemRef)
+    /// An item's name is being edited inline. Rebuilding the view would end the edit.
+    var isEditingName: Bool { get }
     /// The view that should take keyboard focus.
     var focusView: NSView { get }
     /// Folder that “New Folder” and “Paste” go into, when it differs from the pane location (column view).
@@ -21,6 +23,7 @@ protocol BrowserContent: NSViewController {
 
 extension BrowserContent {
     var targetFolder: ItemRef? { nil }
+    var isEditingName: Bool { false }
     func childrenChanged(in folder: ItemRef) {}
     func iconSizeChanged() {}
     func viewOptionsChanged() {}

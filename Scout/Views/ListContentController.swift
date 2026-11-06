@@ -417,6 +417,8 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
 
     // MARK: Rename
 
+    var isEditingName: Bool { editingItem != nil }
+
     func beginRename(_ ref: ItemRef) {
         guard let item = findItem(ref) else { return }
         let row = outline.row(forItem: item)
@@ -459,6 +461,7 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         if let item { pane?.rename(item, to: field.stringValue) }
         field.stringValue = item?.displayName ?? field.stringValue
         view.window?.makeFirstResponder(outline)
+        pane?.nameEditingEnded()
     }
 
     private func endEditing(_ field: NSTextField?) {

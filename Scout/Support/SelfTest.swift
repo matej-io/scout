@@ -105,6 +105,146 @@ enum SelfTest {
         }
     }
 
+    /// SCOUT_OPSTEST=<empty folder>: in a real window, checks that toolbar clicks leave the active pane alone in
+    /// split view, that a new folder's name is ready to type straight away, and that a long copy shows the
+    /// progress window (after its delay), finishes, and can be stopped without leaving a partial copy.
+    /// SCOUT_OPSTEST_SOURCE names the big file to copy; it should be on another disk, so it's copied rather than cloned.
+    static func runOps(folder: String) {
+        func at(_ t: TimeInterval, _ block: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block) }
+        func log(_ text: String) { NSLog("OPSTEST %@", text) }
+        var failures = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            log("\(ok ? "PASS" : "FAIL") \(name) \(detail)")
+            if !ok { failures += 1 }
+        }
+        let dir = URL(fileURLWithPath: folder)
+        let source = URL(fileURLWithPath: ProcessInfo.processInfo.environment["SCOUT_OPSTEST_SOURCE"]
+                         ?? "/System/Library/Frameworks")
+        let progressWindow = ProgressWindowController.shared.window!
+        func progressText() -> String {
+            var texts: [String] = []
+            func walk(_ v: NSView) {
+                if let f = v as? NSTextField, !f.stringValue.isEmpty { texts.append(f.stringValue) }
+                if let bar = v as? NSProgressIndicator { texts.append(bar.isIndeterminate ? "[indeterminate]" : String(format: "[%.0f%%]", bar.doubleValue * 100)) }
+                v.subviews.forEach(walk)
+            }
+            if let content = progressWindow.contentView { walk(content) }
+            return texts.joined(separator: " | ")
+        }
+        /// Total bytes of the regular files in a file or folder, and how many there are.
+        func contents(_ url: URL) -> (bytes: Int, files: Int) {
+            var bytes = 0, files = 0
+            let urls = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey])?.allObjects as? [URL] ?? [url]
+            for u in urls + [url] {
+                guard let v = try? u.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]), v.isRegularFile == true else { continue }
+                bytes += v.fileSize ?? 0
+                files += 1
+            }
+            return (bytes, files)
+        }
+        func click(_ window: NSWindow, at point: NSPoint) {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let e = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+                window.sendEvent(e)
+            }
+        }
+
+        at(1.0) {
+            guard let window = NSApp.windows.first(where: { $0.windowController is MainWindowController }),
+                  let controller = window.windowController as? MainWindowController else { log("FAIL no window"); NSApp.terminate(nil); return }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.setContentSize(NSSize(width: 1100, height: 650))
+            controller.activePane.navigate(to: .folder(.local(dir)))
+            controller.activePane.setViewMode(.list)
+            controller.toggleSplit(nil)
+            at(1.0) {
+                // 1. Toolbar clicks over the right pane don't activate it; clicks in the pane do.
+                let left = controller.panes[0], right = controller.panes[1]
+                left.focus()
+                let rightFrame = right.view.convert(right.view.bounds, to: nil)
+                let toolbarY = (window.contentLayoutRect.maxY + window.frame.height) / 2
+                click(window, at: NSPoint(x: rightFrame.midX, y: toolbarY))
+                check("toolbar click keeps left pane active", controller.activePane === left)
+                window.makeFirstResponder(controller.searchItem?.searchField)
+                check("search field click keeps left pane active", controller.activePane === left)
+                left.focus()
+                click(window, at: NSPoint(x: rightFrame.midX, y: rightFrame.midY))
+                check("content click activates right pane", controller.activePane === right)
+                left.focus()
+
+                // 2. A new folder's name is being edited straight away, in list and icon views (the watcher reload comes after).
+                left.newFolder(nil)
+                at(1.2) {
+                    let editor = window.firstResponder as? NSTextView
+                    check("new folder name editable (list)", left.content.isEditingName && editor?.isFieldEditor == true,
+                          "editing \(left.content.isEditingName), first responder \(String(describing: window.firstResponder))")
+                    editor?.string = "renamed folder"
+                    window.makeFirstResponder(left.content.focusView)
+                    at(1.0) {
+                        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
+                        check("typed name applied", names.contains("renamed folder"), names.description)
+                        left.setViewMode(.icon)
+                        left.newFolder(nil)
+                        at(1.2) {
+                            check("new folder name editable (icons)", left.content.isEditingName && (window.firstResponder as? NSTextView)?.isFieldEditor == true,
+                                  "first responder \(String(describing: window.firstResponder))")
+                            window.makeFirstResponder(left.content.focusView)
+                            left.setViewMode(.list)
+                            copyTest(controller: controller)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. A long copy shows progress after the delay, completes, and stops cleanly when cancelled.
+        func copyTest(controller: MainWindowController) {
+            let target = dir.appendingPathComponent(source.lastPathComponent)
+            let expected = contents(source)
+            let start = Date()
+            FileOps.transfer([.local(source)], to: .local(dir), move: false, window: controller.window)
+            at(ProgressWindowController.showDelay - 0.5) {
+                check("progress hidden before the delay", !progressWindow.isVisible)
+            }
+            var samples: [String] = []
+            for t in stride(from: 1.2, through: 4.0, by: 0.7) { at(t) { samples.append(progressText()) } }
+            func waitDone() {
+                if !Activity.shared.tasks.isEmpty, Date().timeIntervalSince(start) < 120 { at(0.25, waitDone); return }
+                at(0.5) {
+                    let copied = contents(target)
+                    log("copied in \(String(format: "%.1f", Date().timeIntervalSince(start))) s; samples: \(samples.joined(separator: " || "))")
+                    check("progress shown during copy", samples.contains { $0.contains("Copying") && $0.contains(" of ") })
+                    check("copy complete", copied == expected, "\(copied) vs \(expected)")
+                    check("progress closed after copy", !progressWindow.isVisible)
+                    try? FileManager.default.removeItem(at: target)
+                    cancelTest(controller: controller)
+                }
+            }
+            at(1.0, waitDone)
+        }
+
+        func cancelTest(controller: MainWindowController) {
+            let target = dir.appendingPathComponent(source.lastPathComponent)
+            FileOps.transfer([.local(source)], to: .local(dir), move: false, window: controller.window)
+            at(1.8) {
+                var stop: NSButton?
+                func find(_ v: NSView) { if let b = v as? NSButton, b.toolTip == "Stop" { stop = b }; v.subviews.forEach(find) }
+                if let content = progressWindow.contentView { find(content) }
+                log("before stop: \(progressText())")
+                check("stop button present", stop != nil)
+                stop?.performClick(nil)
+                at(2.5) {
+                    check("stopped copy removed", !FileManager.default.fileExists(atPath: target.path))
+                    check("progress closed after stop", !progressWindow.isVisible)
+                    log(failures == 0 ? "ALL PASS" : "FAILURES \(failures)")
+                    NSApp.terminate(nil)
+                }
+            }
+        }
+    }
+
     static func run(host: String) {
         let queue = DispatchQueue(label: "selftest")
         queue.async {

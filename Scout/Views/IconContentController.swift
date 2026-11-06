@@ -158,10 +158,15 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
 
     // MARK: Rename
 
+    var isEditingName: Bool { editing != nil }
+
     func beginRename(_ ref: ItemRef) {
         guard let index = items.firstIndex(where: { $0.ref == ref }) else { return }
         let path = IndexPath(item: index, section: 0)
+        // Straight after a reload (a new folder) the grid may not have made the item's cell yet.
+        collection.layoutSubtreeIfNeeded()
         collection.scrollToItems(at: [path], scrollPosition: .nearestHorizontalEdge)
+        collection.layoutSubtreeIfNeeded()
         guard let cell = collection.item(at: path) as? IconItem else { return }
         let item = items[index]
         let field = cell.beginEditing()
@@ -195,6 +200,7 @@ final class IconContentController: NSViewController, BrowserContent, NSCollectio
         editing = nil
         finishEditing(field)
         if let current { pane?.rename(current.item, to: field.stringValue) }
+        pane?.nameEditingEnded()
     }
 
     private func finishEditing(_ field: NSTextField) {

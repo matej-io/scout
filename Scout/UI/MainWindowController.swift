@@ -6,7 +6,10 @@ final class ScoutWindow: NSWindow {
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown,
-           let contentView {
+           let contentView,
+           // The content runs under the toolbar (full-size content view), so a click on Back, Search and
+           // the rest would otherwise hit the pane beneath and switch to it. The toolbar acts on the active pane.
+           contentLayoutRect.contains(event.locationInWindow) {
             // Activate before dispatch so background clicks and controls target this pane.
             // hitTest expects a point in the receiver's superview coordinates.
             let point = contentView.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
