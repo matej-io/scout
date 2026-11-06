@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if urls.isEmpty { newWindow(nil) } else { show(urls) }
         NSApp.activate()
         if ProcessInfo.processInfo.environment["SCOUT_SPRINGTEST"] != nil { SelfTest.runSpring() }
+        if let query = ProcessInfo.processInfo.environment["SCOUT_SEARCHTEST"] { SelfTest.runSearch(query) }
         if let host = ProcessInfo.processInfo.environment["SCOUT_SELFTEST"] {
             SelfTest.run(host: host)
         }
