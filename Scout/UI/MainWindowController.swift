@@ -93,6 +93,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private var viewGroup: NSToolbarItemGroup?
     private(set) var searchItem: NSSearchToolbarItem?
     private var updateItem: NSToolbarItem?
+    private var splitItem: NSToolbarItem?
     private var previewURLs: [URL] = []
     private lazy var shareConfiguration = ShareConfiguration { [weak self] in
         self?.activePane.selectedItems.compactMap { $0.ref.localURL } ?? []
@@ -151,6 +152,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         toolbar.allowsUserCustomization = true
         toolbar.autosavesConfiguration = true
         window.toolbar = toolbar
+        addSplitItemToSavedToolbar(toolbar)
 
         window.setContentSize(NSSize(width: 1000, height: 600))
         window.onFirstResponderChange = { [weak self] responder in self?.firstResponderChanged(responder) }
@@ -202,6 +204,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         navGroup?.subitems[0].isEnabled = pane.canGoBack
         navGroup?.subitems[1].isEnabled = pane.canGoForward
         viewGroup?.selectedIndex = pane.viewMode.rawValue
+        refreshSplitItem()
         if let field = searchItem?.searchField, field.currentEditor() == nil {
             field.stringValue = pane.searchQuery ?? ""
         }
@@ -271,7 +274,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.sidebarTrackingSeparator, ToolbarID.nav, .flexibleSpace, ToolbarID.view, ToolbarID.group, .space, ToolbarID.newFolder, ToolbarID.action, ToolbarID.update, ToolbarID.search]
+        [.sidebarTrackingSeparator, ToolbarID.nav, .flexibleSpace, ToolbarID.view, ToolbarID.group, ToolbarID.split, .space, ToolbarID.newFolder, ToolbarID.action, ToolbarID.update, ToolbarID.search]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -357,7 +360,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         case ToolbarID.connect:
             return button(id, symbol: "server.rack", label: "Connect", tip: "Connect to a server", action: #selector(connectToServer(_:)))
         case ToolbarID.split:
-            return button(id, symbol: "rectangle.split.2x1", label: "Split", tip: "Show two listings side by side (⌘S)", action: #selector(toggleSplit(_:)))
+            let item = button(id, symbol: "rectangle.split.2x1", label: "Split", tip: "", action: #selector(toggleSplit(_:)))
+            item.paletteLabel = "Split View"
+            splitItem = item
+            refreshSplitItem()
+            return item
         case ToolbarID.quickLook:
             return button(id, symbol: "eye", label: "Quick Look", tip: "Quick Look the selected items", action: #selector(togglePreviewPanel(_:)))
         case ToolbarID.terminal:
@@ -382,6 +389,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         item.action = action
         item.isBordered = true
         return item
+    }
+
+    /// The Split button shows what clicking it switches to: two panes, or back to one.
+    private func refreshSplitItem() {
+        guard let splitItem else { return }
+        splitItem.image = Symbols.image(isSplit ? "rectangle" : "rectangle.split.2x1")
+        splitItem.label = isSplit ? "Single" : "Split"
+        splitItem.toolTip = isSplit ? "Show a single listing (⌘S)" : "Show two listings side by side (⌘S)"
+    }
+
+    private static let splitItemAddedKey = "toolbarSplitItemAdded"
+
+    /// The Split button joined the default toolbar later, so toolbars saved before then get it once, after the
+    /// Group menu. If the user removes it afterwards, it stays removed.
+    private func addSplitItemToSavedToolbar(_ toolbar: NSToolbar) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.splitItemAddedKey) else { return }
+        defaults.set(true, forKey: Self.splitItemAddedKey)
+        guard !toolbar.items.contains(where: { $0.itemIdentifier == ToolbarID.split }) else { return }
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == ToolbarID.group }.map { $0 + 1 }
+            ?? toolbar.items.firstIndex { $0.itemIdentifier == ToolbarID.newFolder }
+            ?? toolbar.items.count
+        toolbar.insertItem(withItemIdentifier: ToolbarID.split, at: index)
     }
 
     /// The Update button stays hidden until Sparkle finds an update. Toolbars saved before it existed don't have it,
