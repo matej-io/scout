@@ -69,24 +69,46 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
         view = browser
         // The browser's columns take the clicks themselves, so watch them on their way in.
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .keyDown]) { [weak self] event in
-            self?.watch(event)
-            return event
+            (self?.watch(event) ?? false) ? nil : event
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(cloudChanged(_:)), name: CloudMonitor.changed, object: nil)
     }
 
     deinit {
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        CloudMonitor.shared.stopObserving(owner: self)
     }
 
-    private func watch(_ event: NSEvent) {
-        guard event.window === browser.window else { return }
+    /// Paths of the cloud items in the columns, so a change redraws only when it's one of them.
+    private var cloudPaths = Set<String>()
+
+    @objc private func cloudChanged(_ note: Notification) {
+        guard let key = note.object as? String, cloudPaths.contains(key) else { return }
+        func redraw(_ view: NSView) {
+            view.needsDisplay = true
+            view.subviews.forEach(redraw)
+        }
+        redraw(browser)
+    }
+
+    /// Returns true when the event was handled and mustn't reach the browser.
+    private func watch(_ event: NSEvent) -> Bool {
+        guard event.window === browser.window else { return false }
         switch event.type {
         case .leftMouseDown:
             let point = browser.convert(event.locationInWindow, from: nil)
-            guard browser.bounds.contains(point) else { clickRename.cancel(); return }
+            guard browser.bounds.contains(point) else { clickRename.cancel(); return false }
             var row = -1
             var column = -1
             let hit = browser.getRow(&row, column: &column, for: point)
+            // A click on the download cloud downloads the item, like in Finder.
+            if hit, let item = browser.item(atRow: row, inColumn: column) as? FileItem, let url = item.ref.localURL,
+               CloudMonitor.shared.status(for: item)?.canDownload == true,
+               FileBrowserCell.badgeRect(for: item, in: browser.frame(ofRow: row, inColumn: column)).insetBy(dx: -3, dy: -3).contains(point) {
+                clickRename.cancel()
+                CloudMonitor.shared.download([url])
+                return true
+            }
             let eligible = hit && row >= 0 && column >= 0 && browser.selectedColumn == column
                 && browser.selectedRowIndexes(inColumn: column) == IndexSet(integer: row)
                 && nameRect(row: row, column: column).contains(point)
@@ -101,6 +123,7 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
         default:
             clickRename.cancel()
         }
+        return false
     }
 
     /// Where FileBrowserCell draws the name, in browser coordinates.
@@ -110,7 +133,7 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
         let x = cell.minX + 8 + (Prefs.shared.columnShowIcons ? 22 : 0)
         let font = NSFont.systemFont(ofSize: Prefs.shared.columnTextSize)
         let width = (item.displayName as NSString).size(withAttributes: [.font: font]).width
-        let maxX = cell.maxX - (item.isBrowsable ? 22 : 0) - 6
+        let maxX = cell.maxX - (item.isBrowsable ? 22 : 0) - 6 - FileBrowserCell.badgeSpace(for: item)
         return NSRect(x: x, y: cell.minY, width: max(0, min(width, maxX - x)), height: cell.height)
     }
 
@@ -143,6 +166,8 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
         for item in newItems where item.children == nil { item.children = oldChildren[item.ref] ?? nil }
         let previousPath = browser.path()
         root.children = newItems
+        cloudPaths = []
+        CloudMonitor.shared.stopObserving(owner: self)
         browser.loadColumnZero()
         if let refs, !refs.isEmpty {
             select(refs)
@@ -229,6 +254,10 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
     func browser(_ sender: NSBrowser, willDisplayCell cell: Any, atRow row: Int, column: Int) {
         guard let cell = cell as? FileBrowserCell, let item = sender.item(atRow: row, inColumn: column) as? FileItem else { return }
         cell.fileItem = item
+        if item.cloud != nil, let url = item.ref.localURL {
+            cloudPaths.insert(CloudMonitor.key(url))
+            CloudMonitor.shared.observe(item, owner: self, replacing: false)
+        }
     }
 
     func browser(_ browser: NSBrowser, previewViewControllerForLeafItem item: Any) -> NSViewController? {
@@ -357,8 +386,29 @@ final class FileBrowserCell: NSBrowserCell {
         let text = item.displayName as NSString
         let chevronWidth: CGFloat = item.isBrowsable ? 22 : 0
         let lineHeight = ceil(font.ascender - font.descender + font.leading)
-        let textRect = NSRect(x: x, y: cellFrame.midY - lineHeight / 2, width: cellFrame.maxX - x - chevronWidth - 6, height: lineHeight)
+        let badgeSpace = FileBrowserCell.badgeSpace(for: item)
+        let textRect = NSRect(x: x, y: cellFrame.midY - lineHeight / 2, width: cellFrame.maxX - x - chevronWidth - 6 - badgeSpace, height: lineHeight)
         text.draw(in: textRect, withAttributes: attrs)
+        if badgeSpace > 0, let status = CloudMonitor.shared.status(for: item) {
+            let badgeColor: NSColor = highlighted && emphasized ? .alternateSelectedControlTextColor : .secondaryLabelColor
+            CloudBadge.draw(status, fraction: CloudMonitor.shared.fraction(for: item),
+                            in: FileBrowserCell.badgeRect(for: item, in: cellFrame), color: badgeColor)
+        }
+    }
+
+    private static var badgeHeight: CGFloat { (Prefs.shared.columnTextSize * 1.05).rounded() }
+
+    /// Room the iCloud badge takes at the end of the row (none when there's no badge).
+    static func badgeSpace(for item: FileItem) -> CGFloat {
+        CloudMonitor.shared.status(for: item)?.showsBadge == true ? CloudBadge.width(for: badgeHeight) + 4 : 0
+    }
+
+    /// Where the iCloud badge goes: at the end of the row, before a folder's chevron.
+    static func badgeRect(for item: FileItem, in cellFrame: NSRect) -> NSRect {
+        let height = badgeHeight
+        let width = CloudBadge.width(for: height)
+        let chevronWidth: CGFloat = item.isBrowsable ? 22 : 0
+        return NSRect(x: cellFrame.maxX - chevronWidth - 6 - width, y: (cellFrame.midY - height / 2).rounded(), width: width, height: height)
     }
 }
 

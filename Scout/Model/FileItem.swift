@@ -80,13 +80,18 @@ final class FileItem: NSObject {
     private(set) var added: Date?
     private(set) var kind: String
     private(set) var tags: [String]
+    /// iCloud Drive (or other cloud folder) state when listed; nil for items that aren't in the cloud.
+    private(set) var cloud: CloudStatus?
+    /// When `cloud` was read, so a newer reading by CloudMonitor wins.
+    private(set) var cloudChecked = Date()
 
     /// Loaded children when expanded in list or column view.
     var children: [FileItem]?
 
     init(ref: ItemRef, name: String, displayName: String? = nil, isDirectory: Bool, isPackage: Bool = false,
          isHidden: Bool, isSymlink: Bool = false, isAlias: Bool = false, size: Int64?, modified: Date?,
-         created: Date? = nil, lastOpened: Date? = nil, added: Date? = nil, kind: String, tags: [String] = []) {
+         created: Date? = nil, lastOpened: Date? = nil, added: Date? = nil, kind: String, tags: [String] = [],
+         cloud: CloudStatus? = nil) {
         self.ref = ref
         self.name = name
         self.displayName = displayName ?? name
@@ -102,6 +107,7 @@ final class FileItem: NSObject {
         self.added = added
         self.kind = kind
         self.tags = tags
+        self.cloud = cloud
     }
 
     /// Takes the details of a fresh listing of the same item, so a view can keep showing this object
@@ -113,6 +119,9 @@ final class FileItem: NSObject {
             || isPackage != fresh.isPackage || isHidden != fresh.isHidden || isSymlink != fresh.isSymlink
             || isAlias != fresh.isAlias || size != fresh.size || modified != fresh.modified || created != fresh.created
             || lastOpened != fresh.lastOpened || added != fresh.added || kind != fresh.kind || tags != fresh.tags
+            || cloud != fresh.cloud
+        // The fresh reading is the newest, even when it says the same (CloudMonitor compares the times).
+        cloudChecked = fresh.cloudChecked
         guard changed else { return false }
         name = fresh.name
         displayName = fresh.displayName
@@ -128,6 +137,7 @@ final class FileItem: NSObject {
         added = fresh.added
         kind = fresh.kind
         tags = fresh.tags
+        cloud = fresh.cloud
         cachedIcon = nil
         return true
     }
@@ -163,12 +173,7 @@ final class FileItem: NSObject {
     }
 
     static func local(_ url: URL) -> FileItem? {
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isPackageKey, .isHiddenKey, .fileSizeKey,
-                                         .contentModificationDateKey, .creationDateKey,
-                                         .localizedTypeDescriptionKey, .tagNamesKey, .localizedNameKey,
-                                         .isSymbolicLinkKey, .isAliasFileKey, .contentAccessDateKey,
-                                         .addedToDirectoryDateKey]
-        guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+        guard let values = try? url.resourceValues(forKeys: Set(localKeys)) else { return nil }
         let isDir = values.isDirectory ?? false
         let isPackage = values.isPackage ?? false
         return FileItem(ref: .local(url),
@@ -185,14 +190,15 @@ final class FileItem: NSObject {
                         lastOpened: values.contentAccessDate,
                         added: values.addedToDirectoryDate,
                         kind: values.localizedTypeDescription ?? (isDir ? "Folder" : "Document"),
-                        tags: values.tagNames ?? [])
+                        tags: values.tagNames ?? [],
+                        cloud: CloudStatus(values, url: url))
     }
 
     static let localKeys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .isHiddenKey, .fileSizeKey,
                                                .contentModificationDateKey, .creationDateKey,
                                                .localizedTypeDescriptionKey, .tagNamesKey, .localizedNameKey,
                                                .isSymbolicLinkKey, .isAliasFileKey, .contentAccessDateKey,
-                                               .addedToDirectoryDateKey]
+                                               .addedToDirectoryDateKey] + CloudStatus.keys
 }
 
 // MARK: - Formatting
