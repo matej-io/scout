@@ -19,7 +19,7 @@ enum FullDiskAccess {
     static var shouldAskAtLaunch: Bool {
         let env = ProcessInfo.processInfo.environment
         if env["SCOUT_FDA"] == "1" { return true }
-        if ["SCOUT_SNAPSHOT", "SCOUT_SELFTEST", "SCOUT_SPRINGTEST", "SCOUT_SEARCHTEST", "SCOUT_OPSTEST"].contains(where: { env[$0] != nil }) { return false }
+        if ["SCOUT_SNAPSHOT", "SCOUT_SELFTEST", "SCOUT_SPRINGTEST", "SCOUT_SEARCHTEST", "SCOUT_OPSTEST", "SCOUT_REFRESHTEST"].contains(where: { env[$0] != nil }) { return false }
         return !UserDefaults.standard.bool(forKey: skippedKey) && !isGranted
     }
 

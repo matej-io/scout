@@ -273,6 +273,108 @@ enum SelfTest {
         }
     }
 
+    /// SCOUT_REFRESHTEST=<empty folder>: in list view with a folder expanded, makes a new folder, renames it, moves
+    /// it into the expanded folder, trashes a file and changes the folder behind Scout's back. The list must take
+    /// each change in place: never rebuilt as a whole, the expanded folder never collapsing (sampled every few ms).
+    static func runRefresh(folder: String) {
+        func at(_ t: TimeInterval, _ block: @escaping () -> Void) { DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block) }
+        func log(_ text: String) { NSLog("REFRESHTEST %@", text) }
+        var failures = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+            log("\(ok ? "PASS" : "FAIL") \(name) \(detail)")
+            if !ok { failures += 1 }
+        }
+        let dir = URL(fileURLWithPath: folder)
+        let fm = FileManager.default
+        let mermaid = dir.appendingPathComponent("Little Mermaid")
+        for name in ["Alpha", "Zed", "Little Mermaid/a", "Little Mermaid/b"] {
+            try? fm.createDirectory(at: dir.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        for name in ["one.txt", "two.txt"] { fm.createFile(atPath: dir.appendingPathComponent(name).path, contents: Data()) }
+
+        at(1.0) {
+            guard let window = NSApp.windows.first(where: { $0.windowController is MainWindowController }),
+                  let controller = window.windowController as? MainWindowController else { log("FAIL no window"); NSApp.terminate(nil); return }
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            let pane = controller.activePane!
+            pane.navigate(to: .folder(.local(dir)))
+            pane.setViewMode(.list)
+            at(1.0) {
+                let outline = pane.content.focusView as! NSOutlineView
+                func row(_ name: String) -> Int {
+                    (0..<outline.numberOfRows).first { (outline.item(atRow: $0) as? FileItem)?.name == name } ?? -1
+                }
+                func names() -> [String] {
+                    (0..<outline.numberOfRows).map { r in
+                        let item = outline.item(atRow: r) as! FileItem
+                        return String(repeating: "  ", count: outline.level(forRow: r)) + item.name
+                    }
+                }
+                outline.expandItem(outline.item(atRow: row("Little Mermaid")))
+                at(0.8) {
+                    guard let expanded = outline.item(atRow: row("Little Mermaid")) as? FileItem, outline.isItemExpanded(expanded) else {
+                        log("FAIL couldn't expand: \(names())"); NSApp.terminate(nil); return
+                    }
+                    log("start: \(names())")
+                    let reloadsBefore = ListContentController.fullReloads
+                    var collapsedSamples = 0, replacedSamples = 0, samples = 0
+                    let sampler = Timer(timeInterval: 0.004, repeats: true) { _ in
+                        samples += 1
+                        let r = row("Little Mermaid")
+                        let item = r >= 0 ? outline.item(atRow: r) as? FileItem : nil
+                        if item !== expanded { replacedSamples += 1 }
+                        if item.map({ !outline.isItemExpanded($0) }) ?? true { collapsedSamples += 1 }
+                    }
+                    RunLoop.main.add(sampler, forMode: .common)
+
+                    // 1. New folder, named while the watcher's reload waits.
+                    pane.newFolder(nil)
+                    at(1.0) {
+                        let editor = window.firstResponder as? NSTextView
+                        check("new folder name editable", pane.content.isEditingName && editor?.isFieldEditor == true)
+                        editor?.string = "test"
+                        window.makeFirstResponder(outline)
+                        at(1.0) {
+                            check("renamed in place", row("test") >= 0 && outline.level(forRow: row("test")) == 0, "\(names())")
+                            check("renamed folder selected", (outline.item(atRow: outline.selectedRow) as? FileItem)?.name == "test")
+                            // 2. Move it into the expanded folder.
+                            FileOps.transfer([.local(dir.appendingPathComponent("test"))], to: .local(mermaid), move: true, window: window)
+                            at(1.5) {
+                                let r = row("test")
+                                check("moved into expanded folder", r >= 0 && outline.level(forRow: r) == 1
+                                      && outline.parent(forItem: outline.item(atRow: r)) as? FileItem === expanded, "\(names())")
+                                // 3. Trash a file.
+                                FileOps.trash([dir.appendingPathComponent("one.txt")]) { _, _ in }
+                                at(1.5) {
+                                    check("trashed file gone", row("one.txt") < 0, "\(names())")
+                                    // 4. Changes made elsewhere: a new file at the top, a folder removed inside the expanded one.
+                                    fm.createFile(atPath: dir.appendingPathComponent("three.txt").path, contents: Data())
+                                    try? fm.removeItem(at: mermaid.appendingPathComponent("a"))
+                                    at(1.5) {
+                                        sampler.invalidate()
+                                        check("outside new file shown", row("three.txt") >= 0, "\(names())")
+                                        // The folder's own date changed, so its contents are refreshed too.
+                                        check("outside removal in expanded folder shown", row("a") < 0, "\(names())")
+                                        let reloads = ListContentController.fullReloads - reloadsBefore
+                                        check("list never rebuilt", reloads == 0, "\(reloads) full reloads")
+                                        check("expanded folder never collapsed", collapsedSamples == 0, "\(collapsedSamples)/\(samples) samples")
+                                        check("expanded folder kept its row", replacedSamples == 0, "\(replacedSamples)/\(samples) samples")
+                                        let top = (pane.content as! ListContentController).topLevelNames
+                                        check("order matches sort", top == pane.sorted(pane.items).map(\.name), "\(top)")
+                                        log("end: \(names())")
+                                        log(failures == 0 ? "ALL PASS" : "FAILURES \(failures)")
+                                        NSApp.terminate(nil)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     static func run(host: String) {
         let queue = DispatchQueue(label: "selftest")
         queue.async {

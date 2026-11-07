@@ -21,6 +21,8 @@ protocol BrowserContent: NSViewController {
     var showsSubfolderContents: Bool { get }
     /// A new item was created inside `folder`, which is shown in this view: reveal it and start renaming it.
     func revealNewItem(_ ref: ItemRef, in folder: ItemRef)
+    /// A rename failed: show the item's old name again.
+    func revertRename(_ ref: ItemRef)
     func iconSizeChanged()
     /// A View Options (⌘J) setting changed.
     func viewOptionsChanged()
@@ -32,6 +34,7 @@ extension BrowserContent {
     func childrenChanged(in folder: ItemRef) {}
     var showsSubfolderContents: Bool { false }
     func revealNewItem(_ ref: ItemRef, in folder: ItemRef) { childrenChanged(in: folder) }
+    func revertRename(_ ref: ItemRef) {}
     func iconSizeChanged() {}
     func viewOptionsChanged() {}
 }

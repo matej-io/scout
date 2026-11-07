@@ -71,6 +71,12 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
     private let scroll = NSScrollView()
     private var items: [FileItem] = []
     private var expandedRefs = Set<ItemRef>()
+    /// The folder and sort order the rows show, so a new listing of it can be applied as changes to the rows.
+    private var shown: (location: Location, sortKey: SortKey, ascending: Bool, foldersFirst: Bool)?
+    /// How many times the whole outline was rebuilt, for SCOUT_REFRESHTEST.
+    static var fullReloads = 0
+    /// The top-level rows' names, for SCOUT_REFRESHTEST.
+    var topLevelNames: [String] { items.map(\.name) }
     private var editingItem: FileItem?
     private var suppressSelectionNotifications = false
     /// True while a drag is over the list; folders then spring open after a delay instead of expanding.
@@ -215,15 +221,37 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
     // MARK: BrowserContent
 
     func display(_ newItems: [FileItem], select refs: [ItemRef]?) {
+        show(newItems, select: refs, inPlace: true)
+    }
+
+    /// A new listing of the folder already on screen only changes the rows that changed (a new folder, a
+    /// deleted file, an updated date). Rebuilding the whole outline instead collapses every expanded folder
+    /// and reloads its children, which is what made the list blink after every change on disk.
+    private func show(_ newItems: [FileItem], select refs: [ItemRef]?, inPlace: Bool) {
         outline.cancelPendingRename()
+        let current = currentShown()
+        let sameFolder = current != nil && current?.location == shown?.location
+        if inPlace, sameFolder, current! == shown!, !items.isEmpty {
+            update(nil, with: newItems, select: refs)
+            return
+        }
         let scrollOrigin = scroll.contentView.bounds.origin
         let refreshing = pane?.isRefreshingListing == true
         // Search results come from many folders: only their live updates count as the same listing.
-        let sameFolder = refreshing
-            || pane?.searchQuery == nil && newItems.first?.ref.parent == items.first?.ref.parent && !items.isEmpty
+        let sameListing = refreshing || sameFolder && !items.isEmpty
         // Search results come and go above the visible rows; keep a row that stays in view where it was.
         let anchor = refreshing ? visibleAnchor() : nil
-        items = newItems
+        if sameFolder {
+            // Same folder in a new order (or new view options): keep the loaded children, so expanded
+            // folders open again straight away rather than collapsing while they reload.
+            var changed: [FileItem] = []
+            items = reconcile(newItems, with: items, changed: &changed)
+            resortChildren(items)
+        } else {
+            items = newItems
+        }
+        shown = current
+        ListContentController.fullReloads += 1
         suppressSelectionNotifications = true
         outline.reloadData()
         syncSortIndicator()
@@ -231,8 +259,8 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         let wanted = expandedRefs
         expandedRefs = []
         for item in items where wanted.contains(item.ref) { expand(item, restoring: wanted) }
-        if let refs { selectRefs(refs, scroll: !sameFolder) }
-        if sameFolder {
+        if let refs { selectRefs(refs, scroll: !sameListing) }
+        if sameListing {
             scroll.contentView.scroll(to: scrollOrigin)
         } else if outline.selectedRowIndexes.isEmpty, outline.numberOfRows > 0 {
             outline.scrollRowToVisible(0)   // a new listing (or new search) starts at the top
@@ -249,6 +277,95 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         }
         suppressSelectionNotifications = false
         pane?.selectionDidChange()
+    }
+
+    /// What the pane shows now; nil for search results, which have their own way of updating.
+    private func currentShown() -> (location: Location, sortKey: SortKey, ascending: Bool, foldersFirst: Bool)? {
+        guard let pane, pane.searchQuery == nil else { return nil }
+        return (pane.location, pane.sortKey, pane.ascending, Prefs.shared.foldersFirst)
+    }
+
+    // MARK: In-place updates
+
+    /// Shows a fresh listing of `parent`'s children (nil: the top level) by inserting, removing and moving
+    /// just the rows that differ. Rows that stay keep their object, so an expanded folder stays expanded.
+    private func update(_ parent: FileItem?, with fresh: [FileItem], select refs: [ItemRef]?) {
+        let old = children(of: parent)
+        var changed: [FileItem] = []
+        let target = reconcile(fresh, with: old, changed: &changed)
+        let steps = RowDiff.steps(from: old, to: target)
+        // A wholesale reorder is cheaper (and calmer) as one reload than as thousands of row moves.
+        if parent == nil, steps.count > 400 {
+            show(fresh, select: refs, inPlace: false)
+            return
+        }
+
+        suppressSelectionNotifications = true
+        let removed = Set(old.map(\.ref)).subtracting(target.map(\.ref))
+        expandedRefs.subtract(removed)
+        if !steps.isEmpty {
+            var working = old
+            outline.beginUpdates()
+            for step in steps {
+                // The data source reads `working` as each step runs, so it always matches the rows.
+                switch step {
+                case .remove(let indexes):
+                    for i in indexes.reversed() { working.remove(at: i) }
+                    setChildren(working, of: parent)
+                    outline.removeItems(at: indexes, inParent: parent, withAnimation: .effectFade)
+                case .move(let from, let to):
+                    working.insert(working.remove(at: from), at: to)
+                    setChildren(working, of: parent)
+                    outline.moveItem(at: from, inParent: parent, to: to, inParent: parent)
+                case .insert(let index):
+                    working.insert(target[index], at: index)
+                    setChildren(working, of: parent)
+                    outline.insertItems(at: [index], inParent: parent, withAnimation: [])
+                }
+            }
+            outline.endUpdates()
+        }
+        setChildren(target, of: parent)
+
+        // Rows whose details changed (a folder's date after something went into it) redraw on their own.
+        let columns = IndexSet(integersIn: 0..<outline.numberOfColumns)
+        let rows = IndexSet(changed.map { outline.row(forItem: $0) }.filter { $0 >= 0 })
+        if !rows.isEmpty { outline.reloadData(forRowIndexes: rows, columnIndexes: columns) }
+        // An expanded folder whose date changed has different contents; catch up on them too.
+        for item in changed where item.isBrowsable && outline.isItemExpanded(item) { childrenChanged(in: item.ref) }
+
+        if let refs { selectRefs(refs, scroll: false) }
+        suppressSelectionNotifications = false
+        pane?.selectionDidChange()
+    }
+
+    private func children(of parent: FileItem?) -> [FileItem] {
+        parent.map { $0.children ?? [] } ?? items
+    }
+
+    private func setChildren(_ list: [FileItem], of parent: FileItem?) {
+        if let parent { parent.children = list } else { items = list }
+    }
+
+    /// The fresh listing, using the objects already on screen for items still there (updated with fresh
+    /// details, listed in `changed` when anything they show changed).
+    private func reconcile(_ fresh: [FileItem], with old: [FileItem], changed: inout [FileItem]) -> [FileItem] {
+        let existing = Dictionary(old.map { ($0.ref, $0) }, uniquingKeysWith: { a, _ in a })
+        return fresh.map { item in
+            guard let kept = existing[item.ref], kept !== item else { return item }
+            if kept.update(from: item) { changed.append(kept) }
+            return kept
+        }
+    }
+
+    /// Loaded children follow a change of sort order.
+    private func resortChildren(_ list: [FileItem]) {
+        guard let pane else { return }
+        for item in list {
+            guard let children = item.children else { continue }
+            item.children = pane.sorted(children)
+            resortChildren(item.children ?? [])
+        }
     }
 
     /// A selected row on screen and its distance from the top of the visible area (the one under the mouse,
@@ -289,9 +406,9 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         guard let item = findItem(folder), outline.isItemExpanded(item) else { return }
         FileService.list(folder, showHidden: Prefs.shared.showHidden) { [weak self] result in
             // Reloading the rows would end an inline rename (e.g. of a folder just created in here).
-            guard let self, self.editingItem == nil, case .success(let children) = result else { return }
-            item.children = self.pane?.sorted(children) ?? children
-            self.outline.reloadItem(item, reloadChildren: true)
+            guard let self, self.editingItem == nil, case .success(let children) = result,
+                  item.children != nil, self.outline.isItemExpanded(item) else { return }
+            self.update(item, with: self.pane?.sorted(children) ?? children, select: nil)
         }
     }
 
@@ -300,13 +417,24 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
     func revealNewItem(_ ref: ItemRef, in folder: ItemRef) {
         guard let item = findItem(folder) else { return }
         FileService.list(folder, showHidden: Prefs.shared.showHidden) { [weak self] result in
-            guard let self, self.editingItem == nil, case .success(let children) = result else { return }
-            item.children = self.pane?.sorted(children) ?? children
-            self.outline.reloadItem(item, reloadChildren: true)
-            self.outline.expandItem(item)
+            guard let self, self.editingItem == nil, case .success(let list) = result else { return }
+            let children = self.pane?.sorted(list) ?? list
+            if item.children != nil, self.outline.isItemExpanded(item) {
+                self.update(item, with: children, select: nil)
+            } else {
+                item.children = children
+                self.outline.reloadItem(item, reloadChildren: true)
+                self.outline.expandItem(item)
+            }
             self.selectRefs([ref], scroll: true)
             DispatchQueue.main.async { self.beginRename(ref) }
         }
+    }
+
+    func revertRename(_ ref: ItemRef) {
+        guard let item = findItem(ref) else { return }
+        let row = outline.row(forItem: item)
+        if row >= 0 { outline.reloadData(forRowIndexes: [row], columnIndexes: IndexSet(integersIn: 0..<outline.numberOfColumns)) }
     }
 
     private func findItem(_ ref: ItemRef) -> FileItem? {
@@ -319,8 +447,9 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
     // MARK: Expansion (children load asynchronously, also over SSH)
 
     private func expand(_ item: FileItem, restoring: Set<ItemRef> = []) {
-        if item.children != nil {
+        if let children = item.children {
             outline.expandItem(item)
+            for child in children where restoring.contains(child.ref) { expand(child, restoring: restoring) }
             return
         }
         FileService.list(item.ref, showHidden: Prefs.shared.showHidden) { [weak self] result in
@@ -473,8 +602,11 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
         let item = editingItem
         editingItem = nil
         endEditing(field)
-        if let item { pane?.rename(item, to: field.stringValue) }
-        field.stringValue = item?.displayName ?? field.stringValue
+        // Keep showing the typed name until the listing catches up, rather than flashing the old one;
+        // a rename that doesn't happen (or fails) puts the old name back.
+        if let item, pane?.rename(item, to: field.stringValue) != true {
+            field.stringValue = item.displayName
+        }
         view.window?.makeFirstResponder(outline)
         pane?.nameEditingEnded()
     }
@@ -563,7 +695,7 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
             column.isHidden = !visible.contains(column.identifier.rawValue)
         }
         outline.rowHeight = ListContentController.rowHeight
-        display(items, select: selectedItems.map(\.ref))
+        show(items, select: selectedItems.map(\.ref), inPlace: false)
         view.needsLayout = true
     }
 }
@@ -576,7 +708,12 @@ final class NameCellView: NSTableCellView {
         super.viewDidChangeEffectiveAppearance()
         updateColor()
     }
-    override var backgroundStyle: NSView.BackgroundStyle { didSet { updateColor() } }
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            cloudBadge.emphasized = backgroundStyle == .emphasized
+            updateColor()
+        }
+    }
     private func updateColor() {
         guard isHiddenItem else { return }
         textField?.textColor = backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : NSColor.hiddenItemText(for: self)
@@ -584,9 +721,13 @@ final class NameCellView: NSTableCellView {
     private let icon = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private let tags = NSStackView()
+    /// Finder's iCloud status, at the trailing edge of the Name column.
+    private let cloudBadge = CloudStatusView()
     private var item: FileItem?
     private lazy var iconWidth = icon.widthAnchor.constraint(equalToConstant: 16)
     private lazy var iconHeight = icon.heightAnchor.constraint(equalToConstant: 16)
+    private lazy var cloudWidth = cloudBadge.widthAnchor.constraint(equalToConstant: 0)
+    private lazy var cloudHeight = cloudBadge.heightAnchor.constraint(equalToConstant: 13)
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -600,9 +741,12 @@ final class NameCellView: NSTableCellView {
         label.focusRingType = .none
         tags.translatesAutoresizingMaskIntoConstraints = false
         tags.spacing = -4
+        cloudBadge.translatesAutoresizingMaskIntoConstraints = false
+        cloudBadge.onChange = { [weak self] in self?.updateCloudWidth() }
         addSubview(icon)
         addSubview(label)
         addSubview(tags)
+        addSubview(cloudBadge)
         imageView = icon
         textField = label
         NSLayoutConstraint.activate([
@@ -614,11 +758,19 @@ final class NameCellView: NSTableCellView {
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             tags.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
             tags.centerYAnchor.constraint(equalTo: centerYAnchor),
-            tags.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -2),
+            tags.trailingAnchor.constraint(lessThanOrEqualTo: cloudBadge.leadingAnchor, constant: -2),
+            cloudBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            cloudBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
+            cloudWidth,
+            cloudHeight,
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private func updateCloudWidth() {
+        cloudWidth.constant = cloudBadge.hasBadge ? CloudBadge.width(for: cloudHeight.constant) : 0
+    }
 
     /// Finder's drag image: the icon, and the name in white on an accent-coloured rounded pill.
     override var draggingImageComponents: [NSDraggingImageComponent] {
@@ -677,6 +829,9 @@ final class NameCellView: NSTableCellView {
         }
         label.font = font
         label.stringValue = item.displayName
+        cloudHeight.constant = (font.pointSize * 1.05).rounded()
+        cloudBadge.configure(item)
+        updateCloudWidth()
         isHiddenItem = item.isHidden
         label.textColor = item.isHidden ? NSColor.hiddenItemText(for: self) : .labelColor
         tags.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -729,5 +884,39 @@ final class TextCellView: NSTableCellView {
         label.alignment = alignment
         self.dimmed = dimmed
         label.textColor = dimmed ? NSColor.hiddenItemText(for: self) : .secondaryLabelColor
+    }
+}
+
+// MARK: - Row diff
+
+/// The row changes that turn one list of items into another: removals first, then moves and insertions
+/// in order of the new positions. Items are compared by identity (`reconcile` keeps the objects that stay).
+enum RowDiff {
+    enum Step: Equatable {
+        case remove(IndexSet)
+        case move(from: Int, to: Int)
+        case insert(Int)
+    }
+
+    static func steps(from old: [FileItem], to new: [FileItem]) -> [Step] {
+        var steps: [Step] = []
+        let kept = Set(new.map(ObjectIdentifier.init))
+        let removed = IndexSet(old.indices.filter { !kept.contains(ObjectIdentifier(old[$0])) })
+        var working = old
+        if !removed.isEmpty {
+            steps.append(.remove(removed))
+            for i in removed.reversed() { working.remove(at: i) }
+        }
+        for (i, item) in new.enumerated() {
+            if i < working.count, working[i] === item { continue }
+            if let j = working[i...].firstIndex(where: { $0 === item }) {
+                steps.append(.move(from: j, to: i))
+                working.insert(working.remove(at: j), at: i)
+            } else {
+                steps.append(.insert(i))
+                working.insert(item, at: i)
+            }
+        }
+        return steps
     }
 }
