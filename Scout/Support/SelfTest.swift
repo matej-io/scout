@@ -185,16 +185,44 @@ enum SelfTest {
                     at(1.0) {
                         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
                         check("typed name applied", names.contains("renamed folder"), names.description)
-                        left.setViewMode(.icon)
-                        left.newFolder(nil)
-                        at(1.2) {
-                            check("new folder name editable (icons)", left.content.isEditingName && (window.firstResponder as? NSTextView)?.isFieldEditor == true,
-                                  "first responder \(String(describing: window.firstResponder))")
-                            window.makeFirstResponder(left.content.focusView)
-                            left.setViewMode(.list)
-                            copyTest(controller: controller)
+                        subfolderTest(left, window: window) {
+                            left.setViewMode(.icon)
+                            left.newFolder(nil)
+                            at(1.2) {
+                                check("new folder name editable (icons)", left.content.isEditingName && (window.firstResponder as? NSTextView)?.isFieldEditor == true,
+                                      "first responder \(String(describing: window.firstResponder))")
+                                window.makeFirstResponder(left.content.focusView)
+                                left.setViewMode(.list)
+                                copyTest(controller: controller)
+                            }
                         }
                     }
+                }
+            }
+        }
+
+        // 2b. A folder's context menu offers a new folder inside it: revealed and renamed in place in the list,
+        //     named up front (“New Subfolder”) in icon view.
+        func subfolderTest(_ pane: PaneViewController, window: NSWindow, then next: @escaping () -> Void) {
+            let parent = URL(fileURLWithPath: folder).appendingPathComponent("renamed folder")
+            func menuTitle() -> String? {
+                pane.contextMenu(for: pane.selectedItems).items.first { $0.action == #selector(PaneViewController.newSubfolder(_:)) }?.title
+            }
+            pane.content.select([.local(parent)])
+            check("folder menu offers New Folder (list)", menuTitle() == "New Folder", String(describing: menuTitle()))
+            pane.newSubfolder(nil)
+            at(1.2) {
+                let inside = (try? FileManager.default.contentsOfDirectory(atPath: parent.path)) ?? []
+                check("subfolder created inside", inside == ["untitled folder"], inside.description)
+                check("subfolder name editable (list)", pane.content.isEditingName && (window.firstResponder as? NSTextView)?.isFieldEditor == true,
+                      "first responder \(String(describing: window.firstResponder))")
+                window.makeFirstResponder(pane.content.focusView)
+                pane.setViewMode(.icon)
+                at(0.5) {
+                    pane.content.select([.local(parent)])
+                    check("folder menu offers New Subfolder (icons)", menuTitle() == "New Subfolder", String(describing: menuTitle()))
+                    pane.setViewMode(.list)
+                    at(0.5, next)
                 }
             }
         }

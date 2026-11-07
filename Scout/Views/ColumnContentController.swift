@@ -202,6 +202,25 @@ final class ColumnContentController: NSViewController, BrowserContent, NSBrowser
         }
     }
 
+    var showsSubfolderContents: Bool { true }
+
+    func revealNewItem(_ ref: ItemRef, in folder: ItemRef) {
+        for column in 0...max(0, browser.lastColumn) {
+            guard let parent = browser.parentForItems(inColumn: column) as? FileItem, parent !== root, parent.ref == folder else { continue }
+            FileService.list(folder, showHidden: Prefs.shared.showHidden) { [weak self] result in
+                guard let self, case .success(let list) = result else { return }
+                parent.children = self.pane?.sorted(list) ?? list
+                self.browser.reloadColumn(column)
+                guard let row = parent.children?.firstIndex(where: { $0.ref == ref }) else { return }
+                self.browser.selectRowIndexes([row], inColumn: column)
+                self.browser.scrollRowToVisible(row, inColumn: column)
+                self.pane?.selectionDidChange()
+                self.beginRename(ref)
+            }
+            return
+        }
+    }
+
     // MARK: NSBrowserDelegate (item based)
 
     func rootItem(for browser: NSBrowser) -> Any? { root }

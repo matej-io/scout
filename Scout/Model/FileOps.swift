@@ -8,9 +8,10 @@ enum FileOps {
 
     // MARK: New folder
 
-    static func newFolder(in folder: ItemRef, completion: @escaping (Result<ItemRef, Error>) -> Void) {
+    /// Creates a folder inside `folder`: “untitled folder” (numbered if taken), or `name` exactly (failing if taken).
+    static func newFolder(in folder: ItemRef, named name: String? = nil, completion: @escaping (Result<ItemRef, Error>) -> Void) {
         queue.async {
-            let name = FileService.uniqueName("untitled folder", existing: FileService.existingNames(in: folder), isDirectory: true)
+            let name = name ?? FileService.uniqueName("untitled folder", existing: FileService.existingNames(in: folder), isDirectory: true)
             let target = folder.appending(name)
             let result: Result<ItemRef, Error>
             switch target {
