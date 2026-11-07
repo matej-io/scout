@@ -3,8 +3,8 @@ import AppKit
 /// Scout's settings file, `~/.config/io.matej.Scout/config.json5`: a JSON5 object, so it can have
 /// comments, single-quoted strings, trailing commas and unquoted keys.
 /// The file is read at launch and again whenever it has changed when Scout comes to the front
-/// (or on Reload Configuration). Its values win over menu toggles such as Show Hidden Files and over
-/// favourites dragged into the sidebar, which last until the next reload.
+/// (or on Reload Configuration). Its values win over menu toggles such as Show Hidden Files.
+/// When it sets `favorites`, changes made in the sidebar are written back into it (see `saveFavorites`).
 final class Config {
     static let shared = Config()
 
@@ -79,6 +79,102 @@ final class Config {
             Config.alert(parsed == nil ? "Scout couldn’t read the configuration." : "Some settings in the configuration were ignored.",
                          problems.joined(separator: "\n"))
         }
+    }
+
+    /// Writes the sidebar's favourites into the file when it sets `favorites`, so the next reload
+    /// (such as the relaunch after an update) keeps them. Only that value changes; comments and the
+    /// rest of the file stay as they are. A file without `favorites` is left alone.
+    func saveFavorites(_ paths: [String]) {
+        // Write through a symlink (dotfiles are often linked) instead of replacing it.
+        let file = Config.url.resolvingSymlinksInPath()
+        guard let text = try? String(contentsOf: file, encoding: .utf8),
+              let current = Config.parse(text).values?["favorites"] as? [String], current != paths,
+              let updated = Config.replacingFavorites(in: text, with: paths) else { return }
+        do {
+            try updated.write(to: file, atomically: true, encoding: .utf8)
+        } catch {
+            Config.alert("Couldn’t save Favourites to \(Config.displayPath).", error.localizedDescription)
+            return
+        }
+        values["favorites"] = paths
+        loadedDate = Config.modificationDate()
+    }
+
+    /// The text with the top-level `favorites` array replaced by `paths`, or nil when it has no such array.
+    /// Skips comments and strings, so a commented-out `// favorites: [...]` isn't touched.
+    static func replacingFavorites(in text: String, with paths: [String]) -> String? {
+        let s = Array(text.unicodeScalars)
+        func isIdentifier(_ c: Unicode.Scalar) -> Bool {
+            c.properties.isAlphabetic || ("0"..."9").contains(c) || c == "_" || c == "$"
+        }
+        var i = 0, depth = 0, expectKey = false
+        var key: String?, start: Int?, found: Range<Int>?
+        while i < s.count {
+            let c = s[i]
+            let next = i + 1 < s.count ? s[i + 1] : nil
+            if c == "/" && next == "/" {
+                while i < s.count && s[i] != "\n" { i += 1 }
+                continue
+            }
+            if c == "/" && next == "*" {
+                i += 2
+                while i + 1 < s.count && !(s[i] == "*" && s[i + 1] == "/") { i += 1 }
+                i += 2
+                continue
+            }
+            if c == "\"" || c == "'" {
+                let from = i + 1
+                i += 1
+                while i < s.count && s[i] != c { i += s[i] == "\\" ? 2 : 1 }
+                if expectKey && depth == 1 {
+                    key = String(String.UnicodeScalarView(s[from..<min(i, s.count)]))
+                    expectKey = false
+                }
+                i += 1
+                continue
+            }
+            switch c {
+            case "{", "[":
+                if c == "[" && depth == 1 && key == "favorites" { start = i }
+                depth += 1
+                if depth == 1 { expectKey = true }
+            case "}", "]":
+                depth -= 1
+                if c == "]" && depth == 1, let from = start { found = from..<(i + 1); start = nil }
+            case ",":
+                if depth == 1 { expectKey = true; key = nil }
+            default:
+                if expectKey && depth == 1 && isIdentifier(c) {
+                    let from = i
+                    while i < s.count && isIdentifier(s[i]) { i += 1 }
+                    key = String(String.UnicodeScalarView(s[from..<i]))
+                    expectKey = false
+                    continue
+                }
+            }
+            i += 1
+        }
+        // With a repeated key the last one wins, as when the file is read.
+        guard let range = found else { return nil }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        let items = paths.map { path -> String in
+            let short = (path as NSString).abbreviatingWithTildeInPath
+            return (try? encoder.encode(short)).flatMap { String(data: $0, encoding: .utf8) } ?? "\"\(short)\""
+        }
+        let array: String
+        if s[range].contains("\n") && !items.isEmpty {
+            // Keep a list that was written one folder per line that way.
+            var lineStart = range.lowerBound
+            while lineStart > 0 && s[lineStart - 1] != "\n" { lineStart -= 1 }
+            let indent = String(String.UnicodeScalarView(s[lineStart..<range.lowerBound].prefix { $0 == " " || $0 == "\t" }))
+            array = "[\n" + items.map { "\(indent)  \($0),\n" }.joined() + indent + "]"
+        } else {
+            array = "[" + items.joined(separator: ", ") + "]"
+        }
+        return String(String.UnicodeScalarView(s[..<range.lowerBound])) + array
+            + String(String.UnicodeScalarView(s[range.upperBound...]))
     }
 
     /// Parses the JSON5 text into checked values; `values` is nil when the text isn't a JSON5 object.
@@ -167,8 +263,8 @@ final class Config {
       // showRecents: true,
 
       // The folders under Favourites in the sidebar, in order. ~ is your home folder.
-      // When set, this list replaces the sidebar's on every reload; folders dragged
-      // in or out of the sidebar last until then.
+      // When set, Scout keeps this list in step with the sidebar: folders you drag in,
+      // out or around there are saved here.
       // favorites: ["/Applications", "~/Desktop", "~/Documents", "~/Downloads"],
 
       // How folders open until you pick a view for them: "icon", "list", "column" or "gallery".

@@ -294,7 +294,11 @@ final class Prefs {
                     home.appendingPathComponent("Documents").path,
                     home.appendingPathComponent("Downloads").path]
         }
-        set { defaults.set(newValue, forKey: "favorites"); post() }
+        set {
+            defaults.set(newValue, forKey: "favorites")
+            Config.shared.saveFavorites(newValue)
+            post()
+        }
     }
 
     var showRecents: Bool {
