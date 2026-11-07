@@ -80,7 +80,7 @@ The file is [JSON5](https://json5.org): one object, with `//` and `/* */` commen
 
 Options that aren't set (or are `null`) follow Finder's settings. View menu toggles such as Show Hidden Files still work, and last until the file is next reloaded.
 
-`favorites` lists the folders under Favourites in the sidebar, in order (`~` is your home folder). When it's set, it replaces the sidebar's list on every reload, and folders dragged in or out of the sidebar last until then. Leave it out to manage Favourites only by dragging.
+`favorites` lists the folders under Favourites in the sidebar, in order (`~` is your home folder). When it's set, the file and the sidebar stay in step: Scout uses this list on every reload, and folders you drag in, out or around in the sidebar are saved back into it (only that line changes, comments stay). Leave it out to manage Favourites only by dragging.
 
 ### Open in Terminal
 
