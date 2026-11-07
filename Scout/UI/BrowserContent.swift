@@ -16,6 +16,8 @@ protocol BrowserContent: NSViewController {
     var targetFolder: ItemRef? { get }
     /// A subfolder shown inline (expanded row, deeper column) changed on disk.
     func childrenChanged(in folder: ItemRef)
+    /// A rename failed: show the item's old name again.
+    func revertRename(_ ref: ItemRef)
     func iconSizeChanged()
     /// A View Options (⌘J) setting changed.
     func viewOptionsChanged()
@@ -25,6 +27,7 @@ extension BrowserContent {
     var targetFolder: ItemRef? { nil }
     var isEditingName: Bool { false }
     func childrenChanged(in folder: ItemRef) {}
+    func revertRename(_ ref: ItemRef) {}
     func iconSizeChanged() {}
     func viewOptionsChanged() {}
 }
