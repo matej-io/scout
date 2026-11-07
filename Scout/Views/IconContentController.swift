@@ -353,6 +353,8 @@ final class IconItem: NSCollectionViewItem {
     let label = NSTextField(wrappingLabelWithString: "")
     private let infoLabel = NSTextField(labelWithString: "")
     private let tagDots = NSStackView()
+    /// Finder's iCloud status, just before the name.
+    private let cloudBadge = CloudStatusView()
     private var item: FileItem?
     private var metrics = IconMetrics.current
     private weak var collection: FileCollectionView?
@@ -380,6 +382,8 @@ final class IconItem: NSCollectionViewItem {
         root.addSubview(label)
         root.addSubview(infoLabel)
         root.addSubview(tagDots)
+        cloudBadge.onChange = { [weak self] in self?.view.needsLayout = true }
+        root.addSubview(cloudBadge)
         view = root
         imageView = icon
         textField = label
@@ -402,6 +406,7 @@ final class IconItem: NSCollectionViewItem {
         infoLabel.alignment = label.alignment
         infoLabel.stringValue = ""
         infoLabel.isHidden = !metrics.showInfo
+        cloudBadge.configure(item)
         tagDots.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for tag in item.tags.prefix(3) {
             guard let color = FinderTag.color(for: tag) else { continue }
@@ -457,30 +462,37 @@ final class IconItem: NSCollectionViewItem {
         let hasInfo = metrics.showInfo && !infoLabel.stringValue.isEmpty && !isEditingName
         let infoHeight = hasInfo ? metrics.infoLineHeight : 0
         infoLabel.isHidden = !hasInfo
+        let badgeHeight = (metrics.font.pointSize * 1.05).rounded()
+        let badgeWidth = cloudBadge.hasBadge && !isEditingName ? CloudBadge.width(for: badgeHeight) : 0
+        cloudBadge.isHidden = badgeWidth == 0
         if metrics.labelsRight {
             // Icon on the left, name (and info) beside it, vertically centred like Finder.
             let iconRect = NSRect(x: 6, y: (bounds.height - s) / 2, width: s, height: s)
             icon.frame = iconRect
             iconBackground.frame = iconRect.insetBy(dx: -4, dy: -4)
             let x = iconRect.maxX + 8
-            let maxWidth = bounds.width - x - 4
+            let maxWidth = bounds.width - x - 4 - badgeWidth
             var size = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: maxWidth - 8, height: maxHeight))
             size.width = min(maxWidth, ceil(size.width) + 8)
             size.height = min(maxHeight, ceil(size.height) + 1)
             let top = (bounds.height - size.height - infoHeight) / 2
-            label.frame = NSRect(x: x, y: top, width: size.width, height: size.height)
-            infoLabel.frame = NSRect(x: x, y: label.frame.maxY, width: maxWidth, height: infoHeight)
+            label.frame = NSRect(x: x + badgeWidth, y: top, width: size.width, height: size.height)
+            infoLabel.frame = NSRect(x: x, y: label.frame.maxY, width: maxWidth + badgeWidth, height: infoHeight)
         } else {
             let iconRect = NSRect(x: (bounds.width - s) / 2, y: 6, width: s, height: s)
             icon.frame = iconRect
             iconBackground.frame = iconRect.insetBy(dx: -4, dy: -4)
-            let maxWidth = bounds.width - 6
+            let maxWidth = bounds.width - 6 - badgeWidth
             var size = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: maxWidth - 8, height: maxHeight))
             size.width = min(maxWidth, ceil(size.width) + 8)
             size.height = min(maxHeight, ceil(size.height) + 1)
-            label.frame = NSRect(x: (bounds.width - size.width) / 2, y: iconRect.maxY + 7, width: size.width, height: size.height)
+            // The badge and the name are centred together.
+            let x = ((bounds.width - size.width - badgeWidth) / 2).rounded()
+            label.frame = NSRect(x: x + badgeWidth, y: iconRect.maxY + 7, width: size.width, height: size.height)
             infoLabel.frame = NSRect(x: 3, y: label.frame.maxY, width: bounds.width - 6, height: infoHeight)
         }
+        cloudBadge.frame = NSRect(x: label.frame.minX - badgeWidth + 2, y: (label.frame.minY + (lineHeight - badgeHeight) / 2).rounded(),
+                                  width: badgeWidth, height: badgeHeight)
         let dotsSize = tagDots.fittingSize
         tagDots.frame = NSRect(x: label.frame.maxX - 2, y: label.frame.minY + 3, width: dotsSize.width, height: dotsSize.height)
     }

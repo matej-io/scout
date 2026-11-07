@@ -756,6 +756,8 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
             }
             switch item.ref {
             case .local(let url):
+                // The app that opens it downloads it too; asking here shows the download's progress straight away.
+                if CloudMonitor.shared.status(for: item)?.canDownload == true { CloudMonitor.shared.download([url]) }
                 NSWorkspace.shared.open(url)
             case .remote:
                 FileOps.cachedCopy(of: item.ref) { result in
@@ -1083,6 +1085,32 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         reload()
     }
 
+    // MARK: iCloud
+
+    /// The selected items in the cloud whose current state passes `test`.
+    private func cloudURLs(_ items: [FileItem], where test: (CloudStatus) -> Bool) -> [URL] {
+        items.compactMap { item in
+            guard let url = item.ref.localURL, let status = CloudMonitor.shared.status(for: item), test(status) else { return nil }
+            return url
+        }
+    }
+
+    @objc func downloadNow(_ sender: Any?) {
+        let urls = cloudURLs(selectedItems, where: \.canDownload)
+        guard !urls.isEmpty else { return }
+        CloudMonitor.shared.download(urls) { [weak self] error in
+            if let error { self?.showError(error) }
+        }
+    }
+
+    @objc func removeDownload(_ sender: Any?) {
+        let urls = cloudURLs(selectedItems, where: { $0 == .current })
+        guard !urls.isEmpty else { return }
+        CloudMonitor.shared.removeDownload(urls) { [weak self] error in
+            if let error { self?.showError(error) }
+        }
+    }
+
     @objc func ejectHost(_ sender: Any?) {
         guard let host = location.ref?.remoteHost else { return }
         SSHManager.shared.host(host).disconnect()
@@ -1132,6 +1160,10 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
             return true
         case #selector(ejectHost(_:)):
             return location.isRemote
+        case #selector(downloadNow(_:)):
+            return !cloudURLs(selection, where: \.canDownload).isEmpty
+        case #selector(removeDownload(_:)):
+            return !cloudURLs(selection, where: { $0 == .current }).isEmpty
         default:
             return true
         }
@@ -1155,6 +1187,16 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
             menu.addItem(withTitle: "Open in New Tab", action: #selector(openInNewTab(_:)), keyEquivalent: "")
         }
         menu.addItem(.separator())
+        if selection.contains(where: { $0.cloud != nil }) {
+            // Finder offers whichever applies to the selection.
+            if !cloudURLs(selection, where: \.canDownload).isEmpty {
+                menu.addItem(withTitle: "Download Now", action: #selector(downloadNow(_:)), keyEquivalent: "")
+            }
+            if !cloudURLs(selection, where: { $0 == .current }).isEmpty {
+                menu.addItem(withTitle: "Remove Download", action: #selector(removeDownload(_:)), keyEquivalent: "")
+            }
+            if menu.items.last?.isSeparatorItem == false { menu.addItem(.separator()) }
+        }
         menu.addItem(withTitle: "Move to \(Prefs.trashTitle)", action: #selector(moveToTrash(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Get Info", action: #selector(getInfo(_:)), keyEquivalent: "")

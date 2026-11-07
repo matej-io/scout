@@ -561,7 +561,12 @@ final class NameCellView: NSTableCellView {
         super.viewDidChangeEffectiveAppearance()
         updateColor()
     }
-    override var backgroundStyle: NSView.BackgroundStyle { didSet { updateColor() } }
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            cloudBadge.emphasized = backgroundStyle == .emphasized
+            updateColor()
+        }
+    }
     private func updateColor() {
         guard isHiddenItem else { return }
         textField?.textColor = backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : NSColor.hiddenItemText(for: self)
@@ -569,9 +574,13 @@ final class NameCellView: NSTableCellView {
     private let icon = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private let tags = NSStackView()
+    /// Finder's iCloud status, at the trailing edge of the Name column.
+    private let cloudBadge = CloudStatusView()
     private var item: FileItem?
     private lazy var iconWidth = icon.widthAnchor.constraint(equalToConstant: 16)
     private lazy var iconHeight = icon.heightAnchor.constraint(equalToConstant: 16)
+    private lazy var cloudWidth = cloudBadge.widthAnchor.constraint(equalToConstant: 0)
+    private lazy var cloudHeight = cloudBadge.heightAnchor.constraint(equalToConstant: 13)
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -585,9 +594,12 @@ final class NameCellView: NSTableCellView {
         label.focusRingType = .none
         tags.translatesAutoresizingMaskIntoConstraints = false
         tags.spacing = -4
+        cloudBadge.translatesAutoresizingMaskIntoConstraints = false
+        cloudBadge.onChange = { [weak self] in self?.updateCloudWidth() }
         addSubview(icon)
         addSubview(label)
         addSubview(tags)
+        addSubview(cloudBadge)
         imageView = icon
         textField = label
         NSLayoutConstraint.activate([
@@ -599,11 +611,19 @@ final class NameCellView: NSTableCellView {
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             tags.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
             tags.centerYAnchor.constraint(equalTo: centerYAnchor),
-            tags.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -2),
+            tags.trailingAnchor.constraint(lessThanOrEqualTo: cloudBadge.leadingAnchor, constant: -2),
+            cloudBadge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            cloudBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
+            cloudWidth,
+            cloudHeight,
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private func updateCloudWidth() {
+        cloudWidth.constant = cloudBadge.hasBadge ? CloudBadge.width(for: cloudHeight.constant) : 0
+    }
 
     /// Finder's drag image: the icon, and the name in white on an accent-coloured rounded pill.
     override var draggingImageComponents: [NSDraggingImageComponent] {
@@ -662,6 +682,9 @@ final class NameCellView: NSTableCellView {
         }
         label.font = font
         label.stringValue = item.displayName
+        cloudHeight.constant = (font.pointSize * 1.05).rounded()
+        cloudBadge.configure(item)
+        updateCloudWidth()
         isHiddenItem = item.isHidden
         label.textColor = item.isHidden ? NSColor.hiddenItemText(for: self) : .labelColor
         tags.arrangedSubviews.forEach { $0.removeFromSuperview() }

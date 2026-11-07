@@ -80,13 +80,18 @@ final class FileItem: NSObject {
     let added: Date?
     let kind: String
     let tags: [String]
+    /// iCloud Drive (or other cloud folder) state when listed; nil for items that aren't in the cloud.
+    let cloud: CloudStatus?
+    /// When `cloud` was read, so a newer reading by CloudMonitor wins.
+    let cloudChecked = Date()
 
     /// Loaded children when expanded in list or column view.
     var children: [FileItem]?
 
     init(ref: ItemRef, name: String, displayName: String? = nil, isDirectory: Bool, isPackage: Bool = false,
          isHidden: Bool, isSymlink: Bool = false, isAlias: Bool = false, size: Int64?, modified: Date?,
-         created: Date? = nil, lastOpened: Date? = nil, added: Date? = nil, kind: String, tags: [String] = []) {
+         created: Date? = nil, lastOpened: Date? = nil, added: Date? = nil, kind: String, tags: [String] = [],
+         cloud: CloudStatus? = nil) {
         self.ref = ref
         self.name = name
         self.displayName = displayName ?? name
@@ -102,6 +107,7 @@ final class FileItem: NSObject {
         self.added = added
         self.kind = kind
         self.tags = tags
+        self.cloud = cloud
     }
 
     /// Folders the user can navigate into (packages such as apps open instead).
@@ -135,12 +141,7 @@ final class FileItem: NSObject {
     }
 
     static func local(_ url: URL) -> FileItem? {
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isPackageKey, .isHiddenKey, .fileSizeKey,
-                                         .contentModificationDateKey, .creationDateKey,
-                                         .localizedTypeDescriptionKey, .tagNamesKey, .localizedNameKey,
-                                         .isSymbolicLinkKey, .isAliasFileKey, .contentAccessDateKey,
-                                         .addedToDirectoryDateKey]
-        guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+        guard let values = try? url.resourceValues(forKeys: Set(localKeys)) else { return nil }
         let isDir = values.isDirectory ?? false
         let isPackage = values.isPackage ?? false
         return FileItem(ref: .local(url),
@@ -157,14 +158,15 @@ final class FileItem: NSObject {
                         lastOpened: values.contentAccessDate,
                         added: values.addedToDirectoryDate,
                         kind: values.localizedTypeDescription ?? (isDir ? "Folder" : "Document"),
-                        tags: values.tagNames ?? [])
+                        tags: values.tagNames ?? [],
+                        cloud: CloudStatus(values, url: url))
     }
 
     static let localKeys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .isHiddenKey, .fileSizeKey,
                                                .contentModificationDateKey, .creationDateKey,
                                                .localizedTypeDescriptionKey, .tagNamesKey, .localizedNameKey,
                                                .isSymbolicLinkKey, .isAliasFileKey, .contentAccessDateKey,
-                                               .addedToDirectoryDateKey]
+                                               .addedToDirectoryDateKey] + CloudStatus.keys
 }
 
 // MARK: - Formatting
