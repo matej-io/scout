@@ -66,20 +66,20 @@ enum ItemRef: Hashable, Codable {
 
 final class FileItem: NSObject {
     let ref: ItemRef
-    let name: String
-    let displayName: String
-    let isDirectory: Bool
-    let isPackage: Bool
-    let isHidden: Bool
-    let isSymlink: Bool
-    let isAlias: Bool
-    let size: Int64?
-    let modified: Date?
-    let created: Date?
-    let lastOpened: Date?
-    let added: Date?
-    let kind: String
-    let tags: [String]
+    private(set) var name: String
+    private(set) var displayName: String
+    private(set) var isDirectory: Bool
+    private(set) var isPackage: Bool
+    private(set) var isHidden: Bool
+    private(set) var isSymlink: Bool
+    private(set) var isAlias: Bool
+    private(set) var size: Int64?
+    private(set) var modified: Date?
+    private(set) var created: Date?
+    private(set) var lastOpened: Date?
+    private(set) var added: Date?
+    private(set) var kind: String
+    private(set) var tags: [String]
 
     /// Loaded children when expanded in list or column view.
     var children: [FileItem]?
@@ -102,6 +102,34 @@ final class FileItem: NSObject {
         self.added = added
         self.kind = kind
         self.tags = tags
+    }
+
+    /// Takes the details of a fresh listing of the same item, so a view can keep showing this object
+    /// (with its loaded children) instead of rebuilding its row. Returns true when anything shown changed.
+    @discardableResult
+    func update(from fresh: FileItem) -> Bool {
+        guard fresh.ref == ref else { return false }
+        let changed = name != fresh.name || displayName != fresh.displayName || isDirectory != fresh.isDirectory
+            || isPackage != fresh.isPackage || isHidden != fresh.isHidden || isSymlink != fresh.isSymlink
+            || isAlias != fresh.isAlias || size != fresh.size || modified != fresh.modified || created != fresh.created
+            || lastOpened != fresh.lastOpened || added != fresh.added || kind != fresh.kind || tags != fresh.tags
+        guard changed else { return false }
+        name = fresh.name
+        displayName = fresh.displayName
+        isDirectory = fresh.isDirectory
+        isPackage = fresh.isPackage
+        isHidden = fresh.isHidden
+        isSymlink = fresh.isSymlink
+        isAlias = fresh.isAlias
+        size = fresh.size
+        modified = fresh.modified
+        created = fresh.created
+        lastOpened = fresh.lastOpened
+        added = fresh.added
+        kind = fresh.kind
+        tags = fresh.tags
+        cachedIcon = nil
+        return true
     }
 
     /// Folders the user can navigate into (packages such as apps open instead).

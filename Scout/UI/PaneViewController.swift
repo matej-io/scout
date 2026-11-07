@@ -775,9 +775,11 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         return .local(resolved)
     }
 
-    func rename(_ item: FileItem, to newName: String) {
+    /// Returns false when there's nothing to rename (an empty, unchanged or invalid name).
+    @discardableResult
+    func rename(_ item: FileItem, to newName: String) -> Bool {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != item.name, !name.contains("/") else { return }
+        guard !name.isEmpty, name != item.name, !name.contains("/") else { return false }
         let oldName = item.name
         reloadAfterEditing = false   // the rename reloads anyway
         FileOps.rename(item.ref, to: name) { [weak self] result in
@@ -793,9 +795,11 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
                 }
             case .failure(let error):
                 self?.showError(error)
+                self?.content.revertRename(item.ref)
                 self?.content.display(self?.items ?? [], select: [item.ref])
             }
         }
+        return true
     }
 
     private var pendingSelection: [ItemRef] = []
