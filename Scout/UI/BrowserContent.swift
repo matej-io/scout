@@ -16,6 +16,11 @@ protocol BrowserContent: NSViewController {
     var targetFolder: ItemRef? { get }
     /// A subfolder shown inline (expanded row, deeper column) changed on disk.
     func childrenChanged(in folder: ItemRef)
+    /// Whether a folder's contents can be shown in place (expanded row, next column), so a new item
+    /// created inside it can be revealed and renamed there.
+    var showsSubfolderContents: Bool { get }
+    /// A new item was created inside `folder`, which is shown in this view: reveal it and start renaming it.
+    func revealNewItem(_ ref: ItemRef, in folder: ItemRef)
     /// A rename failed: show the item's old name again.
     func revertRename(_ ref: ItemRef)
     func iconSizeChanged()
@@ -27,6 +32,8 @@ extension BrowserContent {
     var targetFolder: ItemRef? { nil }
     var isEditingName: Bool { false }
     func childrenChanged(in folder: ItemRef) {}
+    var showsSubfolderContents: Bool { false }
+    func revealNewItem(_ ref: ItemRef, in folder: ItemRef) { childrenChanged(in: folder) }
     func revertRename(_ ref: ItemRef) {}
     func iconSizeChanged() {}
     func viewOptionsChanged() {}

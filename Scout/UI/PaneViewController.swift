@@ -845,16 +845,66 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
                 if folder == self.location.ref {
                     self.reloadThenRename(ref)
                 } else {
-                    self.content.childrenChanged(in: folder)
+                    self.content.revealNewItem(ref, in: folder)
                 }
-                if let undo = self.view.window?.undoManager, case .local(let url) = ref {
-                    undo.registerUndo(withTarget: self) { _ in FileOps.trash([url]) { _, _ in } }
-                    undo.setActionName("New Folder")
-                }
+                self.registerNewFolderUndo(ref)
             case .failure(let error):
                 self.showError(error)
             }
         }
+    }
+
+    /// The folder a “New Folder” / “New Subfolder” context menu item creates into: the one selected folder.
+    private var subfolderParent: FileItem? {
+        let selection = selectedItems
+        guard selection.count == 1, selection[0].isBrowsable, canModify(selection[0]) else { return nil }
+        return selection[0]
+    }
+
+    /// Creates a folder inside the selected folder. Views that show folder contents in place (list, columns)
+    /// reveal it and start renaming it; icon and gallery views ask for the name first, since it wouldn't be visible.
+    @objc func newSubfolder(_ sender: Any?) {
+        guard let parent = subfolderParent else { NSSound.beep(); return }
+        guard !content.showsSubfolderContents else {
+            FileOps.newFolder(in: parent.ref) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let ref):
+                    self.content.revealNewItem(ref, in: parent.ref)
+                    self.registerNewFolderUndo(ref)
+                case .failure(let error):
+                    self.showError(error)
+                }
+            }
+            return
+        }
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "New Folder in “\(parent.displayName)”"
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: "untitled folder")
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !name.contains("/") else { NSSound.beep(); return }
+            FileOps.newFolder(in: parent.ref, named: name) { result in
+                guard let self else { return }
+                switch result {
+                case .success(let ref): self.registerNewFolderUndo(ref)
+                case .failure(let error): self.showError(error)
+                }
+            }
+        }
+    }
+
+    private func registerNewFolderUndo(_ ref: ItemRef) {
+        guard let undo = view.window?.undoManager, case .local(let url) = ref else { return }
+        undo.registerUndo(withTarget: self) { _ in FileOps.trash([url]) { _, _ in } }
+        undo.setActionName("New Folder")
     }
 
     private func reloadThenRename(_ ref: ItemRef) {
@@ -1133,6 +1183,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         case #selector(goForward(_:)): return canGoForward
         case #selector(goEnclosingFolder(_:)): return location.parent != nil
         case #selector(newFolder(_:)): return targetFolder != nil && searchQuery == nil
+        case #selector(newSubfolder(_:)): return subfolderParent != nil
         case #selector(renameSelection(_:)): return modifiable.count == 1
         case #selector(moveToTrash(_:)):
             if modifiable.contains(where: { $0.ref.isRemote }) { item.title = "Delete Immediately…" }
@@ -1189,6 +1240,10 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         }
         if selection.contains(where: \.isBrowsable) {
             menu.addItem(withTitle: "Open in New Tab", action: #selector(openInNewTab(_:)), keyEquivalent: "")
+        }
+        if subfolderParent != nil {
+            menu.addItem(withTitle: content.showsSubfolderContents ? "New Folder" : "New Subfolder",
+                         action: #selector(newSubfolder(_:)), keyEquivalent: "")
         }
         menu.addItem(.separator())
         if selection.contains(where: { $0.cloud != nil }) {

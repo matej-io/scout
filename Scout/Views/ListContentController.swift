@@ -405,9 +405,29 @@ final class ListContentController: NSViewController, BrowserContent, NSOutlineVi
     func childrenChanged(in folder: ItemRef) {
         guard let item = findItem(folder), outline.isItemExpanded(item) else { return }
         FileService.list(folder, showHidden: Prefs.shared.showHidden) { [weak self] result in
-            guard let self, case .success(let children) = result,
+            // Reloading the rows would end an inline rename (e.g. of a folder just created in here).
+            guard let self, self.editingItem == nil, case .success(let children) = result,
                   item.children != nil, self.outline.isItemExpanded(item) else { return }
             self.update(item, with: self.pane?.sorted(children) ?? children, select: nil)
+        }
+    }
+
+    var showsSubfolderContents: Bool { true }
+
+    func revealNewItem(_ ref: ItemRef, in folder: ItemRef) {
+        guard let item = findItem(folder) else { return }
+        FileService.list(folder, showHidden: Prefs.shared.showHidden) { [weak self] result in
+            guard let self, self.editingItem == nil, case .success(let list) = result else { return }
+            let children = self.pane?.sorted(list) ?? list
+            if item.children != nil, self.outline.isItemExpanded(item) {
+                self.update(item, with: children, select: nil)
+            } else {
+                item.children = children
+                self.outline.reloadItem(item, reloadChildren: true)
+                self.outline.expandItem(item)
+            }
+            self.selectRefs([ref], scroll: true)
+            DispatchQueue.main.async { self.beginRename(ref) }
         }
     }
 
