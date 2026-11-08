@@ -46,7 +46,8 @@ The version sets:
   - the GitHub release: tag v<version>, titled "Scout <version>"
 The build number is set automatically to the number of commits
 (git rev-list --count HEAD), so each release gets a higher one. The in-app updater
-compares build numbers, so release from a commit that comes after the last release.
+compares build numbers, so the script stops (unless --force) when the current commit's
+build number isn't higher than the newest tag's, e.g. when it was already released.
 
 In-app updates:
   Scout checks https://github.com/matej-io/scout/releases/latest/download/appcast.xml
@@ -149,6 +150,30 @@ case "${VERSION:-patch}" in
     ;;
 esac
 BUILD_NUMBER=$(git rev-list --count HEAD)
+
+# Sparkle offers an update only when the build number goes up, so the current commit must
+# have more commits than the one the newest release was built from.
+if [[ -n "$LATEST" ]] && ! (( FORCE )); then
+  LATEST_TAG=v$LATEST
+  if ! git rev-parse -q --verify "$LATEST_TAG^{commit}" >/dev/null; then
+    git fetch -q origin "refs/tags/${LATEST_TAG}:refs/tags/${LATEST_TAG}" 2>/dev/null || true
+  fi
+  if LATEST_COMMIT=$(git rev-parse -q --verify "$LATEST_TAG^{commit}"); then
+    LATEST_BUILD=$(git rev-list --count "$LATEST_COMMIT")
+    if (( BUILD_NUMBER <= LATEST_BUILD )); then
+      if [[ "$LATEST_COMMIT" == "$(git rev-parse HEAD)" ]]; then
+        echo "$LATEST_TAG was already released from this commit. Commit something new before releasing $VERSION." >&2
+      else
+        echo "This commit's build number ($BUILD_NUMBER) isn't higher than $LATEST_TAG's ($LATEST_BUILD)," >&2
+        echo "so the in-app updater wouldn't offer $VERSION. Release from a later commit (e.g. pull main first)." >&2
+      fi
+      echo "Pass --force to release anyway." >&2
+      exit 1
+    fi
+  else
+    echo "Couldn't find the commit for $LATEST_TAG; skipping the build number check." >&2
+  fi
+fi
 OUT=build/release
 PACKAGES=build/SourcePackages
 REPO=matej-io/scout
