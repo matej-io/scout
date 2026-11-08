@@ -32,9 +32,26 @@ final class ScoutWindow: NSWindow {
     }
 }
 
+/// The content runs under the toolbar, which belongs to whichever pane is active rather than to either side,
+/// so the divider starts below it, level with the column headers.
+final class PaneSplitView: NSSplitView {
+    override func drawDivider(in rect: NSRect) {
+        let top = safeAreaInsets.top
+        let below = isFlipped
+            ? NSRect(x: bounds.minX, y: bounds.minY + top, width: bounds.width, height: bounds.height - top)
+            : NSRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height - top)
+        super.drawDivider(in: rect.intersection(below))
+    }
+
+    override func layout() {
+        super.layout()
+        needsDisplay = true   // the toolbar's height (safe area) can change with the window
+    }
+}
+
 /// Holds one or two panes side by side.
 final class PaneContainerViewController: NSViewController, NSSplitViewDelegate {
-    let splitView = NSSplitView()
+    let splitView = PaneSplitView()
     private(set) var panes: [PaneViewController] = []
 
     override func loadView() {
@@ -93,7 +110,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private var viewGroup: NSToolbarItemGroup?
     private(set) var searchItem: NSSearchToolbarItem?
     private var updateItem: NSToolbarItem?
-    private var splitItem: NSToolbarItem?
     private var previewURLs: [URL] = []
     private lazy var shareConfiguration = ShareConfiguration { [weak self] in
         self?.activePane.selectedItems.compactMap { $0.ref.localURL } ?? []
@@ -204,7 +220,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         navGroup?.subitems[0].isEnabled = pane.canGoBack
         navGroup?.subitems[1].isEnabled = pane.canGoForward
         viewGroup?.selectedIndex = pane.viewMode.rawValue
-        refreshSplitItem()
         if let field = searchItem?.searchField, field.currentEditor() == nil {
             field.stringValue = pane.searchQuery ?? ""
         }
@@ -360,10 +375,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         case ToolbarID.connect:
             return button(id, symbol: "server.rack", label: "Connect", tip: "Connect to a server", action: #selector(connectToServer(_:)))
         case ToolbarID.split:
-            let item = button(id, symbol: "rectangle.split.2x1", label: "Split", tip: "", action: #selector(toggleSplit(_:)))
+            let item = button(id, symbol: "rectangle.split.2x1", label: "Split", tip: "Show or hide a second listing (⌘S)", action: #selector(toggleSplit(_:)))
             item.paletteLabel = "Split View"
-            splitItem = item
-            refreshSplitItem()
             return item
         case ToolbarID.quickLook:
             return button(id, symbol: "eye", label: "Quick Look", tip: "Quick Look the selected items", action: #selector(togglePreviewPanel(_:)))
@@ -389,14 +402,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         item.action = action
         item.isBordered = true
         return item
-    }
-
-    /// The Split button shows what clicking it switches to: two panes, or back to one.
-    private func refreshSplitItem() {
-        guard let splitItem else { return }
-        splitItem.image = Symbols.image(isSplit ? "rectangle" : "rectangle.split.2x1")
-        splitItem.label = isSplit ? "Single" : "Split"
-        splitItem.toolTip = isSplit ? "Show a single listing (⌘S)" : "Show two listings side by side (⌘S)"
     }
 
     private static let splitItemAddedKey = "toolbarSplitItemAdded"
