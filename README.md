@@ -126,9 +126,12 @@ fi && open -a cmux
 ## Releasing
 
 ```sh
-scripts/release.sh 1.0.1            # archive (arm64), sign with Developer ID, notarize, build the DMG
-scripts/release.sh 1.0.1 --publish  # …and create the GitHub release with the DMG attached
+scripts/release.sh                  # archive (arm64), sign with Developer ID, notarize, build the DMG
+scripts/release.sh --publish        # …and create the GitHub release with the DMG attached
+scripts/release.sh minor --publish  # bump minor instead of patch (or major, or an exact version like 2.0.0)
 ```
+
+The version comes from the newest `v<x.y.z>` git tag (local or on origin), with the last number bumped by default, e.g. `v1.1.12` → `1.1.13`. `MARKETING_VERSION` in the Xcode project isn't used.
 
 Signing and notarization use the Xcode account for the ZEN PLUS LTD team (automatic signing with `-allowProvisioningUpdates`). On CI, set `ASC_KEY_PATH`, `ASC_KEY_ID` and `ASC_ISSUER_ID` to use an App Store Connect API key instead. The output goes to `build/release/`.
 

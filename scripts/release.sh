@@ -3,9 +3,10 @@
 # packages it into a DMG, writes the Sparkle appcast and (optionally) publishes a GitHub release.
 #
 # Usage:
-#   scripts/release.sh [version] [--publish] [--force] [--no-notarize]
+#   scripts/release.sh [version|patch|minor|major] [--publish] [--force] [--no-notarize]
 #
-#   version        Marketing version, e.g. 1.0.0 (defaults to MARKETING_VERSION in the project)
+#   version        Marketing version, e.g. 1.0.0, or patch/minor/major to bump the newest
+#                  v<x.y.z> git tag (default: patch)
 #   --publish      Create a GitHub release "v<version>" with the DMG attached (uses gh)
 #   --force        With --publish, replace the DMG of an existing release v<version> instead of failing
 #   --no-notarize  Skip notarization (the app will only run on this Mac without Gatekeeper warnings)
@@ -21,15 +22,16 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'EOF'
-Usage: scripts/release.sh [version] [--publish] [--force] [--no-notarize]
+Usage: scripts/release.sh [version|patch|minor|major] [--publish] [--force] [--no-notarize]
 
 Builds Scout for Apple silicon, signs it with Developer ID, notarizes it and
 packages it as build/release/Scout-<version>-arm64.dmg, plus build/release/appcast.xml
 for the in-app updater (Sparkle).
 
 Arguments:
-  version        The version to release, e.g. 1.2.0. If omitted, the script uses
-                 MARKETING_VERSION from the Xcode project.
+  version        The version to release: an exact version such as 1.2.0, or patch, minor
+                 or major to bump the newest v<x.y.z> tag (local or on origin).
+                 Defaults to patch, e.g. v1.1.11 -> 1.1.12.
   --publish      Also create the GitHub release v<version> with the DMG and appcast.xml attached.
                  The current commit is pushed first and the tag is created on it.
                  Fails before building if tag v<version> or its release already exists.
@@ -54,10 +56,10 @@ In-app updates:
   generate_keys -x). Without that key, updates can't be published.
 
 Good to know:
-  - The version argument doesn't change the project file. Releasing 1.2.0 still
-    leaves MARKETING_VERSION at its old value, so a later run without a version
-    (or a build from Xcode) uses the old number. Either always pass the version
-    or bump MARKETING_VERSION before releasing.
+  - The version comes from git tags, not from MARKETING_VERSION in the project file,
+    which is only used for builds from Xcode. The project file isn't changed.
+  - An exact version must be higher than the newest tag (unless --force), so the
+    in-app updater and the "latest" GitHub release stay in order.
   - If tag v<version> already exists, --publish stops before building. Pass --force
     to replace the existing release's DMG, e.g. to fix a broken build.
 
@@ -72,6 +74,8 @@ Environment:
   SPARKLE_KEY_FILE      Sparkle private key file to sign the update with, instead of the Keychain (CI).
 
 Examples:
+  scripts/release.sh --publish          # newest tag v1.1.11 -> releases 1.1.12
+  scripts/release.sh minor --publish    # v1.1.11 -> 1.2.0
   scripts/release.sh 1.2.0
   RELEASE_NOTES="- Faster SSH listings" scripts/release.sh 1.2.0 --publish
   scripts/release.sh 1.2.0 --publish --force
@@ -95,10 +99,55 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -z "$VERSION" ]]; then
-  VERSION=$(xcodebuild -project $APP.xcodeproj -scheme $APP -configuration Release -showBuildSettings 2>/dev/null \
-    | awk -F' = ' '/ MARKETING_VERSION = / { print $2; exit }')
-fi
+# The newest release version among v<x.y.z> tags, both local and on origin (so a tag
+# created on another machine counts even before it's fetched).
+latest_tag_version() {
+  local remote
+  if ! remote=$(git ls-remote --tags --refs origin 'v*' 2>/dev/null); then
+    echo "Couldn't reach origin; using local tags only." >&2
+    remote=""
+  fi
+  { git tag -l 'v*'; print -r -- "$remote" | sed -E 's#.*refs/tags/##' } \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1
+}
+
+# Exit status 0 when version $1 is higher than $2.
+version_gt() {
+  local -a a b
+  a=(${(s:.:)1}) b=(${(s:.:)2})
+  for i in 1 2 3; do
+    (( a[i] > b[i] )) && return 0
+    (( a[i] < b[i] )) && return 1
+  done
+  return 1
+}
+
+LATEST=$(latest_tag_version)
+case "${VERSION:-patch}" in
+  patch|minor|major)
+    if [[ -z "$LATEST" ]]; then
+      echo "No v<x.y.z> tags found to bump. Pass the version explicitly, e.g. scripts/release.sh 1.0.0" >&2
+      exit 1
+    fi
+    parts=(${(s:.:)LATEST})
+    case "${VERSION:-patch}" in
+      patch) VERSION="$parts[1].$parts[2].$(( parts[3] + 1 ))" ;;
+      minor) VERSION="$parts[1].$(( parts[2] + 1 )).0" ;;
+      major) VERSION="$(( parts[1] + 1 )).0.0" ;;
+    esac
+    echo "Newest tag is v$LATEST, releasing $VERSION."
+    ;;
+  *)
+    if [[ ! "$VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]]; then
+      echo "Version must look like 1.2.3 (or be patch, minor or major), got: $VERSION" >&2
+      exit 1
+    fi
+    if [[ -n "$LATEST" ]] && ! (( FORCE )) && ! version_gt "$VERSION" "$LATEST"; then
+      echo "Version $VERSION isn't higher than the newest tag v$LATEST. Pick a higher one, or pass --force." >&2
+      exit 1
+    fi
+    ;;
+esac
 BUILD_NUMBER=$(git rev-list --count HEAD)
 OUT=build/release
 PACKAGES=build/SourcePackages
