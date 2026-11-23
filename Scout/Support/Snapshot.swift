@@ -3,7 +3,7 @@ import AppKit
 /// Debug helper for screenshots without screen-recording permission:
 /// SCOUT_SNAPSHOT=/path.png renders the first window into a PNG after launch.
 /// Optional: SCOUT_START=/path or ssh:host:/path, SCOUT_VIEW=0-3, SCOUT_SPLIT=1, SCOUT_APPEARANCE=dark|light,
-/// SCOUT_SNAPSHOT_DELAY=seconds, SCOUT_SNAPSHOT_QUIT=1, SCOUT_VIEW_OPTIONS=1 (also renders the ⌘J panel to -options.png).
+/// SCOUT_SNAPSHOT_DELAY=seconds, SCOUT_SNAPSHOT_QUIT=1, SCOUT_VIEW_OPTIONS=1 (also renders the ⌥⌘J panel to -options.png).
 /// SCOUT_FAKE_CLOUD=1 gives items made-up iCloud states, to see the badges on a Mac without iCloud Drive.
 enum Snapshot {
     static var env: [String: String] { ProcessInfo.processInfo.environment }
@@ -51,6 +51,9 @@ enum Snapshot {
         }
         if env["SCOUT_VIEW_OPTIONS"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ViewOptionsController.shared.toggle() }
+        }
+        if env["SCOUT_TERMINAL"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { controller.toggleTerminal(nil) }
         }
         if env["SCOUT_SPLIT"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { controller.toggleSplit(nil) }

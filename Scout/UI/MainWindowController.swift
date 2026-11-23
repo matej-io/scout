@@ -1,5 +1,8 @@
 import AppKit
 import Quartz
+#if DEBUG
+import GhosttyTerminal
+#endif
 
 final class ScoutWindow: NSWindow {
     var onFirstResponderChange: ((NSResponder?) -> Void)?
@@ -103,6 +106,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private let splitController = NSSplitViewController()
     private let sidebar = SidebarViewController()
     private let container = PaneContainerViewController()
+    private let contentSplit = NSSplitViewController()
+    private var terminalPanel: TerminalPanelController?
+    private var terminalItem: NSSplitViewItem?
+    private var terminalHeight: CGFloat = 240
+    private var terminalVisible: Bool { terminalItem?.isCollapsed == false }
     private(set) var activePane: PaneViewController!
     var panes: [PaneViewController] { container.panes }
 
@@ -151,7 +159,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         sidebarItem.minimumThickness = 160
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
-        let contentItem = NSSplitViewItem(viewController: container)
+        contentSplit.splitView.isVertical = false
+        let browserItem = NSSplitViewItem(viewController: container)
+        browserItem.minimumThickness = 120
+        contentSplit.addSplitViewItem(browserItem)
+        let contentItem = NSSplitViewItem(viewController: contentSplit)
         contentItem.minimumThickness = 300
         splitController.addSplitViewItem(sidebarItem)
         splitController.addSplitViewItem(contentItem)
@@ -169,6 +181,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         toolbar.autosavesConfiguration = true
         window.toolbar = toolbar
         addSplitItemToSavedToolbar(toolbar)
+        addTerminalItemToSavedToolbar(toolbar)
 
         window.setContentSize(NSSize(width: 1000, height: 600))
         window.onFirstResponderChange = { [weak self] responder in self?.firstResponderChanged(responder) }
@@ -289,7 +302,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.sidebarTrackingSeparator, ToolbarID.nav, .flexibleSpace, ToolbarID.view, ToolbarID.group, ToolbarID.split, .space, ToolbarID.newFolder, ToolbarID.action, ToolbarID.update, ToolbarID.search]
+        [.sidebarTrackingSeparator, ToolbarID.nav, .flexibleSpace, ToolbarID.view, ToolbarID.group, ToolbarID.split, ToolbarID.terminal, .space, ToolbarID.newFolder, ToolbarID.action, ToolbarID.update, ToolbarID.search]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -381,7 +394,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         case ToolbarID.quickLook:
             return button(id, symbol: "eye", label: "Quick Look", tip: "Quick Look the selected items", action: #selector(togglePreviewPanel(_:)))
         case ToolbarID.terminal:
-            return button(id, symbol: "apple.terminal", label: "Terminal", tip: "Open the folder in Terminal", action: #selector(PaneViewController.openInTerminal(_:)))
+            return button(id, symbol: "apple.terminal", label: "Terminal", tip: "Show or hide Terminal (⌘J)", action: #selector(toggleTerminal(_:)))
         case ToolbarID.update:
             let item = button(id, symbol: "arrow.down.circle", label: "Update", tip: "Update Scout", action: #selector(AppDelegate.checkForUpdates(_:)))
             item.image = item.image?.withSymbolConfiguration(.init(paletteColors: [.controlAccentColor]))
@@ -417,6 +430,53 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             ?? toolbar.items.firstIndex { $0.itemIdentifier == ToolbarID.newFolder }
             ?? toolbar.items.count
         toolbar.insertItem(withItemIdentifier: ToolbarID.split, at: index)
+    }
+
+    private func addTerminalItemToSavedToolbar(_ toolbar: NSToolbar) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "toolbarIntegratedTerminalAdded") else { return }
+        defaults.set(true, forKey: "toolbarIntegratedTerminalAdded")
+        guard !toolbar.items.contains(where: { $0.itemIdentifier == ToolbarID.terminal }) else { return }
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == ToolbarID.split }.map { $0 + 1 }
+            ?? toolbar.items.count
+        toolbar.insertItem(withItemIdentifier: ToolbarID.terminal, at: index)
+    }
+
+    @objc func toggleTerminal(_ sender: Any?) {
+        if terminalVisible {
+            terminalHeight = terminalPanel?.view.frame.height ?? terminalHeight
+            terminalPanel?.setVisible(false)
+            terminalItem?.isCollapsed = true
+            activePane.focus()
+        } else {
+            if terminalPanel == nil {
+                let panel = TerminalPanelController(folder: activePane.location.ref ?? .local(Location.home))
+                panel.onHide = { [weak self] in self?.toggleTerminal(nil) }
+                panel.onExit = { [weak self] in self?.closeTerminal() }
+                let item = NSSplitViewItem(viewController: panel)
+                item.preferredThicknessFraction = min(0.6, terminalHeight / max(1, contentSplit.splitView.bounds.height))
+                item.minimumThickness = 100
+                item.canCollapse = true
+                item.holdingPriority = .defaultHigh
+                terminalPanel = panel
+                terminalItem = item
+                contentSplit.addSplitViewItem(item)
+            }
+            terminalItem?.isCollapsed = false
+            contentSplit.view.layoutSubtreeIfNeeded()
+            let height = contentSplit.splitView.bounds.height
+            contentSplit.splitView.setPosition(max(120, height - min(terminalHeight, height * 0.6)), ofDividerAt: 0)
+            terminalPanel?.setVisible(true)
+            terminalPanel?.focus()
+        }
+    }
+
+    func closeTerminal() {
+        if terminalVisible { activePane.focus() }
+        terminalPanel?.stop()
+        if let terminalItem { contentSplit.removeSplitViewItem(terminalItem) }
+        terminalItem = nil
+        terminalPanel = nil
     }
 
     /// The Update button stays hidden until Sparkle finds an update. Toolbars saved before it existed don't have it,
@@ -642,6 +702,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(toggleTerminal(_:)):
+            item.title = terminalVisible ? "Hide Terminal" : "Show Terminal"
+            return true
         case #selector(toggleSplit(_:)):
             item.title = isSplit ? "Close Split View" : "Split View"
             item.state = .off
@@ -742,6 +805,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     // MARK: Window
 
     func windowWillClose(_ notification: Notification) {
+        closeTerminal()
         AppDelegate.shared.windowClosed(self)
     }
 
@@ -786,3 +850,62 @@ final class ShareConfiguration: NSObject, NSSharingServicePickerToolbarItemDeleg
     func items(for pickerToolbarItem: NSSharingServicePickerToolbarItem) -> [Any] { provider() }
 }
 
+
+#if DEBUG
+extension MainWindowController {
+    /// Real PTY smoke test: directory, input, session persistence, resizing and teardown.
+    func runTerminalTest() {
+        Task { @MainActor in
+            let output = FileManager.default.temporaryDirectory.appendingPathComponent("scout-terminal-test-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: output) }
+            func pause() async { try? await Task.sleep(for: .seconds(1)) }
+            func require(_ value: Bool, _ message: String) {
+                if !value { NSLog("TERMINAL TEST FAILED: %@", message); exit(1) }
+            }
+            activePane.navigate(to: .folder(.local(output.deletingLastPathComponent())))
+            toggleTerminal(nil)
+            await pause()
+            guard let panel = terminalPanel,
+                  let terminal = panel.view.subviews.compactMap({ $0 as? TerminalView }).first else {
+                require(false, "missing terminal"); return
+            }
+            require(window?.firstResponder === terminal, "terminal focus")
+            require(window?.toolbar?.items.contains(where: { $0.itemIdentifier == ToolbarID.terminal }) == true, "default toolbar icon")
+            terminal.paste(text: "export SCOUT_TEST_TOKEN=alive; printf '%s\\n' \"$PWD\" \"$$\" > \(shq(output.path))")
+            terminal.sendKey(.enter)
+            for _ in 0..<10 {
+                if FileManager.default.fileExists(atPath: output.path) { break }
+                await pause()
+            }
+            let first = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
+            let lines = first.split(separator: "\n")
+            require(lines.count == 2, "shell executed command")
+            require(lines.first.map(String.init) == output.deletingLastPathComponent().resolvingSymlinksInPath().path, "working directory")
+            let pid = Int32(lines[1])!
+            // Exercise the actual menu shortcut while the terminal owns focus.
+            let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window!.windowNumber,
+                                      context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38)!
+            window?.makeKey()
+            require(NSApp.mainMenu!.performKeyEquivalent(with: key), "Command-J menu routing")
+            await pause()
+            require(!terminalVisible, "Command-J hides panel")
+            require(window?.firstResponder !== terminal, "hide restores browser focus")
+            toggleTerminal(nil)
+            window?.setContentSize(NSSize(width: 1100, height: 720))
+            await pause()
+            terminal.paste(text: "printf '%s\\n' \"$SCOUT_TEST_TOKEN\" >> \(shq(output.path))")
+            terminal.sendKey(.enter)
+            await pause()
+            let final = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
+            require(final.hasSuffix("alive\n"), "session survives hide and resize")
+            require(terminal.frame.height > 60 && container.view.frame.height > 100, "panel layout")
+            closeTerminal()
+            await pause()
+            require(kill(pid, 0) == -1 && errno == ESRCH, "shell terminated on close")
+            NSLog("TERMINAL TEST PASSED: shell, cwd, toolbar, Command-J, focus, persistence, resize, cleanup")
+            exit(0)
+        }
+    }
+}
+#endif
