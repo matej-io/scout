@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		5C0A00000000000000000012 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 5C0A00000000000000000011 /* Sparkle */; };
+		5C0A00000000000000000022 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = 5C0A00000000000000000021 /* GhosttyTerminal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5C0A00000000000000000012 /* Sparkle in Frameworks */,
+				5C0A00000000000000000022 /* GhosttyTerminal in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +73,7 @@
 			name = Scout;
 			packageProductDependencies = (
 				5C0A00000000000000000011 /* Sparkle */,
+				5C0A00000000000000000021 /* GhosttyTerminal */,
 			);
 			productName = Scout;
 			productReference = 5C0A00000000000000000001 /* Scout.app */;
@@ -102,6 +105,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				5C0A00000000000000000010 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				5C0A00000000000000000020 /* libghostty-spm */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 5C0A00000000000000000005 /* Products */;
@@ -274,6 +278,11 @@
 				minimumVersion = 2.10.1;
 			};
 		};
+		5C0A00000000000000000020 /* libghostty-spm */ = {
+            isa = XCRemoteSwiftPackageReference;
+            repositoryURL = "https://github.com/Lakr233/libghostty-spm.git";
+            requirement = { kind = exactVersion; version = 2.2.2026112303; };
+        };
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -282,6 +291,11 @@
 			package = 5C0A00000000000000000010 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
 		};
+        5C0A00000000000000000021 /* GhosttyTerminal */ = {
+            isa = XCSwiftPackageProductDependency;
+            package = 5C0A00000000000000000020 /* libghostty-spm */;
+            productName = GhosttyTerminal;
+        };
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 5C0A0000000000000000000A /* Project object */;

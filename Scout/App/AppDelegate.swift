@@ -28,6 +28,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         pendingURLs = nil
         if urls.isEmpty { newWindow(nil) } else { show(urls) }
         NSApp.activate()
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["SCOUT_TERMINALTEST"] == "1" {
+            controllers.first?.runTerminalTest()
+        }
+        #endif
         if ProcessInfo.processInfo.environment["SCOUT_SPRINGTEST"] != nil { SelfTest.runSpring() }
         if let query = ProcessInfo.processInfo.environment["SCOUT_SEARCHTEST"] { SelfTest.runSearch(query) }
         if let folder = ProcessInfo.processInfo.environment["SCOUT_OPSTEST"] { SelfTest.runOps(folder: folder) }
@@ -51,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        for controller in controllers { controller.closeTerminal() }
         SSHManager.shared.disconnectAll()
     }
 
@@ -300,8 +306,9 @@ enum MainMenu {
         }
         sort.submenu = sortMenu
         menu.addItem(sort)
-        menu.addItem(item("Show View Options", #selector(MainWindowController.toggleViewOptions(_:)), "j"))
+        menu.addItem(item("Show View Options", #selector(MainWindowController.toggleViewOptions(_:)), "j", [.command, .option]))
         menu.addItem(.separator())
+        menu.addItem(item("Show Terminal", #selector(MainWindowController.toggleTerminal(_:)), "j"))
         menu.addItem(item("Split View", #selector(MainWindowController.toggleSplit(_:)), "s"))
         menu.addItem(item("Switch to Other Pane", #selector(MainWindowController.switchPane(_:)), "\t", [.option]))
         menu.addItem(.separator())

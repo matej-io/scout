@@ -1,5 +1,8 @@
 import AppKit
 import Quartz
+#if DEBUG
+import GhosttyTerminal
+#endif
 
 final class ScoutWindow: NSWindow {
     var onFirstResponderChange: ((NSResponder?) -> Void)?
@@ -103,6 +106,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private let splitController = NSSplitViewController()
     private let sidebar = SidebarViewController()
     private let container = PaneContainerViewController()
+    private let contentSplit = TerminalSplitController()
+    private var terminalPanel: TerminalPanelController?
+    private var terminalSessions: [TerminalPanelController] = []
+    private var terminalVisible: Bool { contentSplit.isTerminalVisible }
     private(set) var activePane: PaneViewController!
     var panes: [PaneViewController] { container.panes }
 
@@ -151,7 +158,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         sidebarItem.minimumThickness = 160
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
-        let contentItem = NSSplitViewItem(viewController: container)
+        contentSplit.setBrowser(container)
+        let contentItem = NSSplitViewItem(viewController: contentSplit)
         contentItem.minimumThickness = 300
         splitController.addSplitViewItem(sidebarItem)
         splitController.addSplitViewItem(contentItem)
@@ -169,6 +177,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         toolbar.autosavesConfiguration = true
         window.toolbar = toolbar
         addSplitItemToSavedToolbar(toolbar)
+        addTerminalItemToSavedToolbar(toolbar)
 
         window.setContentSize(NSSize(width: 1000, height: 600))
         window.onFirstResponderChange = { [weak self] responder in self?.firstResponderChanged(responder) }
@@ -289,7 +298,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.sidebarTrackingSeparator, ToolbarID.nav, .flexibleSpace, ToolbarID.view, ToolbarID.group, ToolbarID.split, .space, ToolbarID.newFolder, ToolbarID.action, ToolbarID.update, ToolbarID.search]
+        [.sidebarTrackingSeparator, ToolbarID.nav, .flexibleSpace, ToolbarID.view, ToolbarID.group, ToolbarID.split, ToolbarID.terminal, .space, ToolbarID.newFolder, ToolbarID.action, ToolbarID.update, ToolbarID.search]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -381,7 +390,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         case ToolbarID.quickLook:
             return button(id, symbol: "eye", label: "Quick Look", tip: "Quick Look the selected items", action: #selector(togglePreviewPanel(_:)))
         case ToolbarID.terminal:
-            return button(id, symbol: "apple.terminal", label: "Terminal", tip: "Open the folder in Terminal", action: #selector(PaneViewController.openInTerminal(_:)))
+            return button(id, symbol: "apple.terminal", label: "Terminal", tip: "Show or hide Terminal (⌘J)", action: #selector(toggleTerminal(_:)))
         case ToolbarID.update:
             let item = button(id, symbol: "arrow.down.circle", label: "Update", tip: "Update Scout", action: #selector(AppDelegate.checkForUpdates(_:)))
             item.image = item.image?.withSymbolConfiguration(.init(paletteColors: [.controlAccentColor]))
@@ -417,6 +426,58 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             ?? toolbar.items.firstIndex { $0.itemIdentifier == ToolbarID.newFolder }
             ?? toolbar.items.count
         toolbar.insertItem(withItemIdentifier: ToolbarID.split, at: index)
+    }
+
+    private func addTerminalItemToSavedToolbar(_ toolbar: NSToolbar) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "toolbarIntegratedTerminalAdded") else { return }
+        defaults.set(true, forKey: "toolbarIntegratedTerminalAdded")
+        guard !toolbar.items.contains(where: { $0.itemIdentifier == ToolbarID.terminal }) else { return }
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == ToolbarID.split }.map { $0 + 1 }
+            ?? toolbar.items.count
+        toolbar.insertItem(withItemIdentifier: ToolbarID.terminal, at: index)
+    }
+
+    @objc func toggleTerminal(_ sender: Any?) {
+        if terminalVisible {
+            terminalPanel?.setVisible(false)
+            activePane.focus()
+            contentSplit.hide()
+        } else {
+            let folder = activePane.location.ref ?? .local(Location.home)
+            // Reuse a session already in this directory. Never type `cd` into
+            // an unknown foreground program (an editor, SSH, or a running job).
+            let panel: TerminalPanelController
+            if let existing = terminalSessions.first(where: { $0.isInFolder(folder) }) {
+                panel = existing
+            } else {
+                panel = TerminalPanelController(folder: folder)
+                panel.onHide = { [weak self] in self?.toggleTerminal(nil) }
+                panel.onExit = { [weak self, weak panel] in
+                    guard let self, let panel else { return }
+                    if self.terminalPanel === panel {
+                        self.activePane.focus()
+                        self.contentSplit.hide()
+                        self.terminalPanel = nil
+                    }
+                    panel.stop()
+                    self.terminalSessions.removeAll { $0 === panel }
+                }
+                terminalSessions.append(panel)
+            }
+            terminalPanel = panel
+            contentSplit.show(panel)
+            panel.setVisible(true)
+            panel.focus()
+        }
+    }
+
+    func closeTerminal() {
+        if terminalVisible { activePane.focus() }
+        contentSplit.hide()
+        for panel in terminalSessions { panel.stop() }
+        terminalSessions.removeAll()
+        terminalPanel = nil
     }
 
     /// The Update button stays hidden until Sparkle finds an update. Toolbars saved before it existed don't have it,
@@ -642,6 +703,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(toggleTerminal(_:)):
+            item.title = terminalVisible ? "Hide Terminal" : "Show Terminal"
+            return true
         case #selector(toggleSplit(_:)):
             item.title = isSplit ? "Close Split View" : "Split View"
             item.state = .off
@@ -742,6 +806,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     // MARK: Window
 
     func windowWillClose(_ notification: Notification) {
+        closeTerminal()
         AppDelegate.shared.windowClosed(self)
     }
 
@@ -786,3 +851,96 @@ final class ShareConfiguration: NSObject, NSSharingServicePickerToolbarItemDeleg
     func items(for pickerToolbarItem: NSSharingServicePickerToolbarItem) -> [Any] { provider() }
 }
 
+
+#if DEBUG
+extension MainWindowController {
+    /// Real PTY smoke test: directory, input, session persistence, resizing and teardown.
+    func runTerminalTest() {
+        Task { @MainActor in
+            let output = FileManager.default.temporaryDirectory.appendingPathComponent("scout-terminal-test-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: output) }
+            func pause() async { try? await Task.sleep(for: .seconds(1)) }
+            func require(_ value: Bool, _ message: String) {
+                if !value { NSLog("TERMINAL TEST FAILED: %@", message); exit(1) }
+            }
+            activePane.navigate(to: .folder(.local(output.deletingLastPathComponent())))
+            toggleTerminal(nil)
+            await pause()
+            guard let panel = terminalPanel,
+                  let terminal = panel.view.subviews.compactMap({ $0 as? TerminalView }).first else {
+                require(false, "missing terminal"); return
+            }
+            require(abs(panel.view.frame.height - 240) < 2, "default terminal height is 240 points")
+            // Drive the divider with AppKit mouse events, including its tracking loop.
+            let split = contentSplit.splitView
+            let start = split.convert(NSPoint(x: split.bounds.midX, y: container.view.frame.maxY + split.dividerThickness / 2), to: nil)
+            let end = NSPoint(x: start.x, y: start.y + 80)
+            func mouse(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            NSApp.postEvent(mouse(.leftMouseDragged, end), atStart: false)
+            NSApp.postEvent(mouse(.leftMouseUp, end), atStart: false)
+            window?.sendEvent(mouse(.leftMouseDown, start))
+            await pause()
+            require(abs(panel.view.frame.height - 320) < 3, "divider drag increases terminal height by 80 points")
+            panel.focus()
+            require(window?.firstResponder === terminal, "terminal focus")
+            require(window?.toolbar?.items.contains(where: { $0.itemIdentifier == ToolbarID.terminal }) == true, "default toolbar icon")
+            terminal.paste(text: "export SCOUT_TEST_TOKEN=alive; printf '%s\\n' \"$PWD\" \"$$\" > \(shq(output.path))")
+            terminal.sendKey(.enter)
+            for _ in 0..<10 {
+                if FileManager.default.fileExists(atPath: output.path) { break }
+                await pause()
+            }
+            let first = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
+            let lines = first.split(separator: "\n")
+            require(lines.count == 2, "shell executed command")
+            require(lines.first.map(String.init) == output.deletingLastPathComponent().resolvingSymlinksInPath().path, "working directory")
+            let pid = Int32(lines[1])!
+            // Exercise the actual menu shortcut while the terminal owns focus.
+            let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window!.windowNumber,
+                                      context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38)!
+            window?.makeKey()
+            require(NSApp.mainMenu!.performKeyEquivalent(with: key), "Command-J menu routing")
+            await pause()
+            require(!terminalVisible, "Command-J hides panel")
+            require(window?.firstResponder !== terminal, "hide restores browser focus")
+            toggleTerminal(nil)
+            window?.setContentSize(NSSize(width: 1100, height: 720))
+            await pause()
+            terminal.paste(text: "printf '%s\\n' \"$SCOUT_TEST_TOKEN\" >> \(shq(output.path))")
+            terminal.sendKey(.enter)
+            await pause()
+            let final = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
+            require(final.hasSuffix("alive\n"), "session survives hide and resize")
+            require(abs(panel.view.frame.height - 320) < 3, "dragged height survives hide and window resize")
+            toggleTerminal(nil)
+            let otherFolder = output.deletingLastPathComponent().appendingPathComponent("Scout folder 'with spaces' \(UUID().uuidString)")
+            try! FileManager.default.createDirectory(at: otherFolder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: otherFolder) }
+            activePane.navigate(to: .folder(.local(otherFolder)))
+            toggleTerminal(nil)
+            await pause()
+            require(terminalPanel !== panel, "reopening follows Scout's changed folder")
+            guard let otherTerminal = terminalPanel?.view.subviews.compactMap({ $0 as? TerminalView }).first else { exit(1) }
+            otherTerminal.paste(text: "printf '%s\\n' \"$PWD\" > \(shq(output.path))")
+            otherTerminal.sendKey(.enter)
+            await pause()
+            require((try? String(contentsOf: output, encoding: .utf8)) == otherFolder.resolvingSymlinksInPath().path + "\n", "new session shell is in Scout's folder")
+            toggleTerminal(nil)
+            activePane.navigate(to: .folder(.local(output.deletingLastPathComponent())))
+            toggleTerminal(nil)
+            await pause()
+            require(terminalPanel === panel, "returning to folder reuses its live session")
+            require(terminal.frame.height > 60 && container.view.frame.height > 100, "panel layout")
+            closeTerminal()
+            await pause()
+            require(kill(pid, 0) == -1 && errno == ESRCH, "shell terminated on close")
+            NSLog("TERMINAL TEST PASSED: shell, cwd, toolbar, Command-J, focus, 240-point default, divider drag, height persistence, folder switching, session reuse, cleanup")
+            exit(0)
+        }
+    }
+}
+#endif
