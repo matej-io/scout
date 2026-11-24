@@ -444,31 +444,65 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             activePane.focus()
             contentSplit.hide()
         } else {
-            let folder = activePane.location.ref ?? .local(Location.home)
-            // Reuse a session already in this directory. Never type `cd` into
-            // an unknown foreground program (an editor, SSH, or a running job).
-            let panel: TerminalPanelController
-            if let existing = terminalSessions.first(where: { $0.isInFolder(folder) }) {
-                panel = existing
-            } else {
-                panel = TerminalPanelController(folder: folder)
-                panel.onHide = { [weak self] in self?.toggleTerminal(nil) }
-                panel.onExit = { [weak self, weak panel] in
-                    guard let self, let panel else { return }
-                    if self.terminalPanel === panel {
-                        self.activePane.focus()
-                        self.contentSplit.hide()
-                        self.terminalPanel = nil
-                    }
-                    panel.stop()
-                    self.terminalSessions.removeAll { $0 === panel }
-                }
-                terminalSessions.append(panel)
-            }
-            terminalPanel = panel
+            if terminalPanel == nil { createTerminal() }
+            guard let panel = terminalPanel else { return }
             contentSplit.show(panel)
             panel.setVisible(true)
+            panel.followFolder(activePane.location.ref ?? .local(Location.home))
             panel.focus()
+        }
+    }
+
+    @objc func newTerminalHere(_ sender: Any?) {
+        terminalPanel?.setVisible(false)
+        contentSplit.hide()
+        createTerminal()
+        guard let panel = terminalPanel else { return }
+        contentSplit.show(panel)
+        panel.setVisible(true)
+        panel.focus()
+    }
+
+    private func createTerminal() {
+        let panel = TerminalPanelController(folder: activePane.location.ref ?? .local(Location.home))
+        panel.onHide = { [weak self] in self?.toggleTerminal(nil) }
+        panel.onNew = { [weak self] in self?.newTerminalHere(nil) }
+        panel.onSelect = { [weak self] index in self?.selectTerminal(index) }
+        panel.onExit = { [weak self, weak panel] in
+            guard let self, let panel else { return }
+            let wasVisible = self.terminalVisible
+            if self.terminalPanel === panel {
+                self.activePane.focus()
+                self.contentSplit.hide()
+                self.terminalPanel = nil
+            }
+            panel.stop()
+            self.terminalSessions.removeAll { $0 === panel }
+            if self.terminalPanel == nil, !self.terminalSessions.isEmpty {
+                self.terminalPanel = self.terminalSessions.last
+                if wasVisible { self.selectTerminal(self.terminalSessions.count - 1) }
+            }
+            self.refreshTerminalSessions()
+        }
+        terminalSessions.append(panel)
+        terminalPanel = panel
+        refreshTerminalSessions()
+    }
+
+    private func selectTerminal(_ index: Int) {
+        guard terminalSessions.indices.contains(index) else { return }
+        terminalPanel?.setVisible(false)
+        contentSplit.hide()
+        terminalPanel = terminalSessions[index]
+        contentSplit.show(terminalSessions[index])
+        terminalSessions[index].setVisible(true)
+        terminalSessions[index].focus()
+        refreshTerminalSessions()
+    }
+
+    private func refreshTerminalSessions() {
+        for (index, panel) in terminalSessions.enumerated() {
+            panel.updateSessions(count: terminalSessions.count, selected: index)
         }
     }
 
@@ -923,22 +957,57 @@ extension MainWindowController {
             activePane.navigate(to: .folder(.local(otherFolder)))
             toggleTerminal(nil)
             await pause()
-            require(terminalPanel !== panel, "reopening follows Scout's changed folder")
+            require(terminalPanel === panel && terminalSessions.count == 1, "reopening keeps the same shell")
             guard let otherTerminal = terminalPanel?.view.subviews.compactMap({ $0 as? TerminalView }).first else { exit(1) }
             otherTerminal.paste(text: "printf '%s\\n' \"$PWD\" > \(shq(output.path))")
             otherTerminal.sendKey(.enter)
             await pause()
-            require((try? String(contentsOf: output, encoding: .utf8)) == otherFolder.resolvingSymlinksInPath().path + "\n", "new session shell is in Scout's folder")
+            require((try? String(contentsOf: output, encoding: .utf8)) == otherFolder.resolvingSymlinksInPath().path + "\n", "idle shell follows Scout folder")
+            terminal.paste(text: "sleep 3; printf '%s\\n' \"$PWD\" > \(shq(output.path))")
+            terminal.sendKey(.enter)
+            await pause()
+            toggleTerminal(nil)
+            activePane.navigate(to: .folder(.local(output.deletingLastPathComponent())))
+            toggleTerminal(nil)
+            for _ in 0..<4 { await pause() }
+            require((try? String(contentsOf: output, encoding: .utf8)) == otherFolder.resolvingSymlinksInPath().path + "\n", "busy job is not navigated or interrupted")
+            terminal.paste(text: "printf preserved")
+            await pause()
+            toggleTerminal(nil)
+            toggleTerminal(nil)
+            await pause()
+            terminal.paste(text: " > \(shq(output.path))")
+            terminal.sendKey(.enter)
+            await pause()
+            require((try? String(contentsOf: output, encoding: .utf8)) == "preserved", "partially typed command is preserved")
             toggleTerminal(nil)
             activePane.navigate(to: .folder(.local(output.deletingLastPathComponent())))
             toggleTerminal(nil)
             await pause()
             require(terminalPanel === panel, "returning to folder reuses its live session")
             require(terminal.frame.height > 60 && container.view.frame.height > 100, "panel layout")
+            terminal.paste(text: "printf '%s\\n' \"$$\" \"$SCOUT_TEST_TOKEN\" \"$PWD\" > \(shq(output.path))")
+            terminal.sendKey(.enter)
+            await pause()
+            let reused = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
+            require(reused == "\(pid)\nalive\n\(output.deletingLastPathComponent().resolvingSymlinksInPath().path)\n", "same PID and environment after idle navigation")
+            newTerminalHere(nil)
+            await pause()
+            require(terminalSessions.count == 2 && terminalPanel !== panel, "explicit new terminal creates a selectable session")
+            selectTerminal(0)
+            require(terminalPanel === panel, "session picker restores original shell")
+            terminal.paste(text: "exit")
+            terminal.sendKey(.enter)
+            await pause()
+            for _ in 0..<5 {
+                if terminalSessions.count == 1 { break }
+                await pause()
+            }
+            require(terminalSessions.count == 1 && terminalPanel !== panel, "exited shell is removed")
             closeTerminal()
             await pause()
             require(kill(pid, 0) == -1 && errno == ESRCH, "shell terminated on close")
-            NSLog("TERMINAL TEST PASSED: shell, cwd, toolbar, Command-J, focus, 240-point default, divider drag, height persistence, folder switching, session reuse, cleanup")
+            NSLog("TERMINAL TEST PASSED: shell, cwd, toolbar, Command-J, focus, 240-point default, divider drag, height persistence, idle folder following, busy and typed-input preservation, session picker, exit, cleanup")
             exit(0)
         }
     }

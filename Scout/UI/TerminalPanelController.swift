@@ -6,12 +6,18 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
                                      TerminalSurfaceClipboardConfirmationDelegate, TerminalSurfacePwdDelegate {
     var onHide: (() -> Void)?
     var onExit: (() -> Void)?
+    var onNew: (() -> Void)?
+    var onSelect: ((Int) -> Void)?
+    private var navigation: TerminalNavigation?
+    private let sessions = NSPopUpButton(frame: .zero, pullsDown: false)
     private let folder: ItemRef
     private(set) var currentFolder: ItemRef
     private let titleLabel = NSTextField(labelWithString: "Terminal")
     private var terminal: TerminalView?
-    private let engine = TerminalController { builder in
+    private lazy var engine = TerminalController { builder in
         builder.withFontSize(13)
+        builder.withCustom("wait-after-command", "false")
+        if self.navigation != nil { builder.withCustom("shell-integration", "none") }
         // These shortcuts belong to Scout, even when the terminal has focus.
         for key in ["super+j", "super+alt+j", "super+t", "super+n", "super+q"] {
             builder.withCustom("keybind", "\(key)=unbind")
@@ -36,30 +42,49 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
         hide.bezelStyle = .inline
         hide.isBordered = false
         hide.toolTip = "Hide Terminal (⌘J). The shell keeps running."
+        sessions.target = self
+        sessions.action = #selector(selectSession)
+        sessions.setAccessibilityLabel("Terminal sessions")
+        let newTerminal = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Terminal Here")!,
+                                   target: self, action: #selector(newSession))
+        newTerminal.isBordered = false
+        newTerminal.toolTip = "New Terminal Here"
         let terminal = TerminalView(frame: .zero)
         terminal.setAccessibilityLabel("Terminal")
         terminal.setAccessibilityIdentifier("scout.terminal")
         terminal.delegate = self
         switch folder {
         case .local(let url):
-            terminal.configuration = TerminalSurfaceOptions(workingDirectory: url.path)
+            let shell = ProcessInfo.processInfo.environment["SHELL"]
+                ?? getpwuid(getuid()).flatMap { $0.pointee.pw_shell }.map { String(cString: $0) } ?? "/bin/zsh"
+            if (shell as NSString).lastPathComponent == "zsh" {
+                navigation = try? TerminalNavigation()
+            }
+            terminal.configuration = TerminalSurfaceOptions(workingDirectory: url.path,
+                envVars: navigation?.environment ?? [:], waitAfterCommand: false)
             titleLabel.stringValue = "Terminal — \(url.lastPathComponent)"
         case .remote(let host, let path):
             let command = (path.isEmpty ? "" : "cd \(shq(path)) && ") + "exec \"$SHELL\" -l"
             terminal.configuration = TerminalSurfaceOptions(
-                command: "/usr/bin/ssh -t -- \(shq(host)) \(shq(command))", waitAfterCommand: true)
+                command: "/usr/bin/ssh -t -- \(shq(host)) \(shq(command))", waitAfterCommand: false)
             titleLabel.stringValue = "Terminal — \(host)"
         }
         terminal.controller = engine
         self.terminal = terminal
-        for child in [titleLabel, hide, terminal] as [NSView] {
+        for child in [titleLabel, sessions, newTerminal, hide, terminal] as [NSView] {
             child.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(child)
         }
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 7),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: hide.leadingAnchor, constant: -8),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: sessions.leadingAnchor, constant: -8),
+            sessions.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            sessions.widthAnchor.constraint(equalToConstant: 130),
+            sessions.trailingAnchor.constraint(equalTo: newTerminal.leadingAnchor, constant: -8),
+            newTerminal.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -8),
+            newTerminal.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            newTerminal.widthAnchor.constraint(equalToConstant: 20),
             hide.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
             hide.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             hide.widthAnchor.constraint(equalToConstant: 20),
@@ -76,14 +101,21 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
         terminal?.fitToSize()
     }
 
-    func isInFolder(_ target: ItemRef) -> Bool {
-        switch (currentFolder, target) {
-        case (.local(let current), .local(let requested)):
-            return current.resolvingSymlinksInPath().standardizedFileURL.path == requested.resolvingSymlinksInPath().standardizedFileURL.path
-        default:
-            return currentFolder == target
-        }
+    func followFolder(_ target: ItemRef) {
+        guard case .local = folder, case .local(let url) = target else { return }
+        navigation?.navigate(to: url)
     }
+
+    func updateSessions(count: Int, selected: Int) {
+        _ = view
+        sessions.removeAllItems()
+        sessions.addItems(withTitles: (1...max(1, count)).map { "Terminal \($0)" })
+        sessions.selectItem(at: selected)
+        sessions.isHidden = count < 2
+    }
+
+    @objc private func newSession() { onNew?() }
+    @objc private func selectSession() { onSelect?(sessions.indexOfSelectedItem) }
 
     func focus() { view.window?.makeFirstResponder(terminal) }
     func setVisible(_ visible: Bool) { terminal?.setSurfaceVisible(visible) }
@@ -92,12 +124,14 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
         terminal?.controller = nil
         terminal?.removeFromSuperview()
         terminal = nil
+        navigation = nil
     }
 
     @objc private func hidePanel() { onHide?() }
     func terminalDidChangeWorkingDirectory(_ path: String) {
         let directory = path.hasPrefix("file://") ? URL(string: path)?.path : path
         guard let directory, directory.hasPrefix("/") else { return }
+        titleLabel.stringValue = "Terminal — \(directory)"
         switch folder {
         case .local:
             currentFolder = .local(URL(fileURLWithPath: directory))
