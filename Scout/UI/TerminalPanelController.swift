@@ -1,12 +1,13 @@
 import AppKit
 import GhosttyTerminal
 
-/// One shell per Scout window/tab. Hiding the panel preserves the PTY and scrollback.
+/// A folder session owned by a Scout window/tab. Hiding the panel preserves the PTY and scrollback.
 final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDelegate, TerminalSurfaceCloseDelegate,
-                                     TerminalSurfaceClipboardConfirmationDelegate {
+                                     TerminalSurfaceClipboardConfirmationDelegate, TerminalSurfacePwdDelegate {
     var onHide: (() -> Void)?
     var onExit: (() -> Void)?
     private let folder: ItemRef
+    private(set) var currentFolder: ItemRef
     private let titleLabel = NSTextField(labelWithString: "Terminal")
     private var terminal: TerminalView?
     private let engine = TerminalController { builder in
@@ -19,6 +20,7 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
 
     init(folder: ItemRef) {
         self.folder = folder
+        self.currentFolder = folder
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -74,6 +76,15 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
         terminal?.fitToSize()
     }
 
+    func isInFolder(_ target: ItemRef) -> Bool {
+        switch (currentFolder, target) {
+        case (.local(let current), .local(let requested)):
+            return current.resolvingSymlinksInPath().standardizedFileURL.path == requested.resolvingSymlinksInPath().standardizedFileURL.path
+        default:
+            return currentFolder == target
+        }
+    }
+
     func focus() { view.window?.makeFirstResponder(terminal) }
     func setVisible(_ visible: Bool) { terminal?.setSurfaceVisible(visible) }
     func stop() {
@@ -84,6 +95,17 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
     }
 
     @objc private func hidePanel() { onHide?() }
+    func terminalDidChangeWorkingDirectory(_ path: String) {
+        let directory = path.hasPrefix("file://") ? URL(string: path)?.path : path
+        guard let directory, directory.hasPrefix("/") else { return }
+        switch folder {
+        case .local:
+            currentFolder = .local(URL(fileURLWithPath: directory))
+        case .remote(let host, _):
+            currentFolder = .remote(host: host, path: directory)
+        }
+    }
+
     func terminalDidChangeTitle(_ title: String) {
         titleLabel.stringValue = title.isEmpty ? "Terminal" : "Terminal — \(title)"
     }

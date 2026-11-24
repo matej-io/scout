@@ -106,11 +106,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private let splitController = NSSplitViewController()
     private let sidebar = SidebarViewController()
     private let container = PaneContainerViewController()
-    private let contentSplit = NSSplitViewController()
+    private let contentSplit = TerminalSplitController()
     private var terminalPanel: TerminalPanelController?
-    private var terminalItem: NSSplitViewItem?
-    private var terminalHeight: CGFloat = 240
-    private var terminalVisible: Bool { terminalItem?.isCollapsed == false }
+    private var terminalSessions: [TerminalPanelController] = []
+    private var terminalVisible: Bool { contentSplit.isTerminalVisible }
     private(set) var activePane: PaneViewController!
     var panes: [PaneViewController] { container.panes }
 
@@ -159,10 +158,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         sidebarItem.minimumThickness = 160
         sidebarItem.maximumThickness = 400
         sidebarItem.canCollapse = true
-        contentSplit.splitView.isVertical = false
-        let browserItem = NSSplitViewItem(viewController: container)
-        browserItem.minimumThickness = 120
-        contentSplit.addSplitViewItem(browserItem)
+        contentSplit.setBrowser(container)
         let contentItem = NSSplitViewItem(viewController: contentSplit)
         contentItem.minimumThickness = 300
         splitController.addSplitViewItem(sidebarItem)
@@ -444,38 +440,43 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     @objc func toggleTerminal(_ sender: Any?) {
         if terminalVisible {
-            terminalHeight = terminalPanel?.view.frame.height ?? terminalHeight
             terminalPanel?.setVisible(false)
-            terminalItem?.isCollapsed = true
             activePane.focus()
+            contentSplit.hide()
         } else {
-            if terminalPanel == nil {
-                let panel = TerminalPanelController(folder: activePane.location.ref ?? .local(Location.home))
+            let folder = activePane.location.ref ?? .local(Location.home)
+            // Reuse a session already in this directory. Never type `cd` into
+            // an unknown foreground program (an editor, SSH, or a running job).
+            let panel: TerminalPanelController
+            if let existing = terminalSessions.first(where: { $0.isInFolder(folder) }) {
+                panel = existing
+            } else {
+                panel = TerminalPanelController(folder: folder)
                 panel.onHide = { [weak self] in self?.toggleTerminal(nil) }
-                panel.onExit = { [weak self] in self?.closeTerminal() }
-                let item = NSSplitViewItem(viewController: panel)
-                item.preferredThicknessFraction = min(0.6, terminalHeight / max(1, contentSplit.splitView.bounds.height))
-                item.minimumThickness = 100
-                item.canCollapse = true
-                item.holdingPriority = .defaultHigh
-                terminalPanel = panel
-                terminalItem = item
-                contentSplit.addSplitViewItem(item)
+                panel.onExit = { [weak self, weak panel] in
+                    guard let self, let panel else { return }
+                    if self.terminalPanel === panel {
+                        self.activePane.focus()
+                        self.contentSplit.hide()
+                        self.terminalPanel = nil
+                    }
+                    panel.stop()
+                    self.terminalSessions.removeAll { $0 === panel }
+                }
+                terminalSessions.append(panel)
             }
-            terminalItem?.isCollapsed = false
-            contentSplit.view.layoutSubtreeIfNeeded()
-            let height = contentSplit.splitView.bounds.height
-            contentSplit.splitView.setPosition(max(120, height - min(terminalHeight, height * 0.6)), ofDividerAt: 0)
-            terminalPanel?.setVisible(true)
-            terminalPanel?.focus()
+            terminalPanel = panel
+            contentSplit.show(panel)
+            panel.setVisible(true)
+            panel.focus()
         }
     }
 
     func closeTerminal() {
         if terminalVisible { activePane.focus() }
-        terminalPanel?.stop()
-        if let terminalItem { contentSplit.removeSplitViewItem(terminalItem) }
-        terminalItem = nil
+        contentSplit.hide()
+        for panel in terminalSessions { panel.stop() }
+        terminalSessions.removeAll()
         terminalPanel = nil
     }
 
@@ -869,6 +870,21 @@ extension MainWindowController {
                   let terminal = panel.view.subviews.compactMap({ $0 as? TerminalView }).first else {
                 require(false, "missing terminal"); return
             }
+            require(abs(panel.view.frame.height - 240) < 2, "default terminal height is 240 points")
+            // Drive the divider with AppKit mouse events, including its tracking loop.
+            let split = contentSplit.splitView
+            let start = split.convert(NSPoint(x: split.bounds.midX, y: container.view.frame.maxY + split.dividerThickness / 2), to: nil)
+            let end = NSPoint(x: start.x, y: start.y + 80)
+            func mouse(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            NSApp.postEvent(mouse(.leftMouseDragged, end), atStart: false)
+            NSApp.postEvent(mouse(.leftMouseUp, end), atStart: false)
+            window?.sendEvent(mouse(.leftMouseDown, start))
+            await pause()
+            require(abs(panel.view.frame.height - 320) < 3, "divider drag increases terminal height by 80 points")
+            panel.focus()
             require(window?.firstResponder === terminal, "terminal focus")
             require(window?.toolbar?.items.contains(where: { $0.itemIdentifier == ToolbarID.terminal }) == true, "default toolbar icon")
             terminal.paste(text: "export SCOUT_TEST_TOKEN=alive; printf '%s\\n' \"$PWD\" \"$$\" > \(shq(output.path))")
@@ -899,11 +915,30 @@ extension MainWindowController {
             await pause()
             let final = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
             require(final.hasSuffix("alive\n"), "session survives hide and resize")
+            require(abs(panel.view.frame.height - 320) < 3, "dragged height survives hide and window resize")
+            toggleTerminal(nil)
+            let otherFolder = output.deletingLastPathComponent().appendingPathComponent("Scout folder 'with spaces' \(UUID().uuidString)")
+            try! FileManager.default.createDirectory(at: otherFolder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: otherFolder) }
+            activePane.navigate(to: .folder(.local(otherFolder)))
+            toggleTerminal(nil)
+            await pause()
+            require(terminalPanel !== panel, "reopening follows Scout's changed folder")
+            guard let otherTerminal = terminalPanel?.view.subviews.compactMap({ $0 as? TerminalView }).first else { exit(1) }
+            otherTerminal.paste(text: "printf '%s\\n' \"$PWD\" > \(shq(output.path))")
+            otherTerminal.sendKey(.enter)
+            await pause()
+            require((try? String(contentsOf: output, encoding: .utf8)) == otherFolder.resolvingSymlinksInPath().path + "\n", "new session shell is in Scout's folder")
+            toggleTerminal(nil)
+            activePane.navigate(to: .folder(.local(output.deletingLastPathComponent())))
+            toggleTerminal(nil)
+            await pause()
+            require(terminalPanel === panel, "returning to folder reuses its live session")
             require(terminal.frame.height > 60 && container.view.frame.height > 100, "panel layout")
             closeTerminal()
             await pause()
             require(kill(pid, 0) == -1 && errno == ESRCH, "shell terminated on close")
-            NSLog("TERMINAL TEST PASSED: shell, cwd, toolbar, Command-J, focus, persistence, resize, cleanup")
+            NSLog("TERMINAL TEST PASSED: shell, cwd, toolbar, Command-J, focus, 240-point default, divider drag, height persistence, folder switching, session reuse, cleanup")
             exit(0)
         }
     }
