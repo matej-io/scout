@@ -308,6 +308,7 @@ enum MainMenu {
         menu.addItem(sort)
         menu.addItem(item("Show View Options", #selector(MainWindowController.toggleViewOptions(_:)), "j", [.command, .option]))
         menu.addItem(.separator())
+        menu.addItem(item("New Terminal Here", #selector(MainWindowController.newTerminalHere(_:))))
         menu.addItem(item("Show Terminal", #selector(MainWindowController.toggleTerminal(_:)), "j"))
         menu.addItem(item("Split View", #selector(MainWindowController.toggleSplit(_:)), "s"))
         menu.addItem(item("Switch to Other Pane", #selector(MainWindowController.switchPane(_:)), "\t", [.option]))
