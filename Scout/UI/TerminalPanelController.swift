@@ -9,8 +9,11 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
     var onNew: (() -> Void)?
     var onSelect: ((Int) -> Void)?
     private var navigation: TerminalNavigation?
+    private var remoteNavigation: RemoteTerminalNavigation?
     private let sessions = NSPopUpButton(frame: .zero, pullsDown: false)
     private let folder: ItemRef
+    var remoteHost: String? { folder.remoteHost }
+    var machineName: String { remoteHost ?? "This Mac" }
     private(set) var currentFolder: ItemRef
     private let titleLabel = NSTextField(labelWithString: "Terminal")
     private var terminal: TerminalView?
@@ -49,6 +52,11 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
                                    target: self, action: #selector(newSession))
         newTerminal.isBordered = false
         newTerminal.toolTip = "New Terminal Here"
+        let closeTerminal = NSButton(image: NSImage(systemSymbolName: "trash", accessibilityDescription: "Close Terminal Session")!,
+                                     target: self, action: #selector(closeSession))
+        closeTerminal.isBordered = false
+        closeTerminal.toolTip = "Close Terminal Session and end its shell"
+        closeTerminal.identifier = NSUserInterfaceItemIdentifier("scout.terminal.close")
         let terminal = TerminalView(frame: .zero)
         terminal.setAccessibilityLabel("Terminal")
         terminal.setAccessibilityIdentifier("scout.terminal")
@@ -64,14 +72,14 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
                 envVars: navigation?.environment ?? [:], waitAfterCommand: false)
             titleLabel.stringValue = "Terminal — \(url.lastPathComponent)"
         case .remote(let host, let path):
-            let command = (path.isEmpty ? "" : "cd \(shq(path)) && ") + "exec \"$SHELL\" -l"
-            terminal.configuration = TerminalSurfaceOptions(
-                command: "/usr/bin/ssh -t -- \(shq(host)) \(shq(command))", waitAfterCommand: false)
-            titleLabel.stringValue = "Terminal — \(host)"
+            let remote = RemoteTerminalNavigation(host: SSHManager.shared.host(host))
+            remoteNavigation = remote
+            terminal.configuration = TerminalSurfaceOptions(command: remote.launchCommand(path: path), waitAfterCommand: false)
+            titleLabel.stringValue = "Terminal — \(machineName)"
         }
         terminal.controller = engine
         self.terminal = terminal
-        for child in [titleLabel, sessions, newTerminal, hide, terminal] as [NSView] {
+        for child in [titleLabel, sessions, newTerminal, closeTerminal, hide, terminal] as [NSView] {
             child.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(child)
         }
@@ -80,11 +88,14 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
             titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 7),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: sessions.leadingAnchor, constant: -8),
             sessions.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            sessions.widthAnchor.constraint(equalToConstant: 130),
+            sessions.widthAnchor.constraint(equalToConstant: 220),
             sessions.trailingAnchor.constraint(equalTo: newTerminal.leadingAnchor, constant: -8),
-            newTerminal.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -8),
+            newTerminal.trailingAnchor.constraint(equalTo: closeTerminal.leadingAnchor, constant: -8),
             newTerminal.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             newTerminal.widthAnchor.constraint(equalToConstant: 20),
+            closeTerminal.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -8),
+            closeTerminal.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            closeTerminal.widthAnchor.constraint(equalToConstant: 20),
             hide.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
             hide.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
             hide.widthAnchor.constraint(equalToConstant: 20),
@@ -102,20 +113,26 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
     }
 
     func followFolder(_ target: ItemRef) {
-        guard case .local = folder, case .local(let url) = target else { return }
-        navigation?.navigate(to: url)
+        guard remoteHost == target.remoteHost else { return }
+        if let url = target.localURL {
+            navigation?.navigate(to: url)
+        } else {
+            remoteNavigation?.navigate(to: target.path)
+        }
     }
 
-    func updateSessions(count: Int, selected: Int) {
+    func updateSessions(titles: [String], selected: Int) {
         _ = view
         sessions.removeAllItems()
-        sessions.addItems(withTitles: (1...max(1, count)).map { "Terminal \($0)" })
+        sessions.addItems(withTitles: titles)
         sessions.selectItem(at: selected)
-        sessions.isHidden = count < 2
+        sessions.toolTip = titles[selected]
+        sessions.isHidden = titles.count < 2
     }
 
     @objc private func newSession() { onNew?() }
     @objc private func selectSession() { onSelect?(sessions.indexOfSelectedItem) }
+    @objc private func closeSession() { onExit?() }
 
     func focus() { view.window?.makeFirstResponder(terminal) }
     func setVisible(_ visible: Bool) { terminal?.setSurfaceVisible(visible) }
@@ -125,13 +142,14 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
         terminal?.removeFromSuperview()
         terminal = nil
         navigation = nil
+        remoteNavigation = nil
     }
 
     @objc private func hidePanel() { onHide?() }
     func terminalDidChangeWorkingDirectory(_ path: String) {
         let directory = path.hasPrefix("file://") ? URL(string: path)?.path : path
         guard let directory, directory.hasPrefix("/") else { return }
-        titleLabel.stringValue = "Terminal — \(directory)"
+        titleLabel.stringValue = remoteHost.map { "\($0) — \(directory)" } ?? "Terminal — \(directory)"
         switch folder {
         case .local:
             currentFolder = .local(URL(fileURLWithPath: directory))
@@ -141,7 +159,8 @@ final class TerminalPanelController: NSViewController, TerminalSurfaceTitleDeleg
     }
 
     func terminalDidChangeTitle(_ title: String) {
-        titleLabel.stringValue = title.isEmpty ? "Terminal" : "Terminal — \(title)"
+        let name = remoteHost ?? "Terminal"
+        titleLabel.stringValue = title.isEmpty ? name : "\(name) — \(title)"
     }
     func terminalDidClose(processAlive: Bool) {
         // Release the surface after Ghostty has returned from its callback.

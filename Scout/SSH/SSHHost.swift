@@ -39,13 +39,13 @@ final class SSHHost {
 
     private var controlPath: String { "/tmp/scout-ssh-\(getuid())-%C" }
 
-    func sshArguments(_ extra: [String] = []) -> [String] {
+    func sshArguments(_ extra: [String] = [], tty: Bool = false) -> [String] {
         ["-o", "ControlMaster=auto",
          "-o", "ControlPath=\(controlPath)",
          "-o", "ControlPersist=600",
          "-o", "ConnectTimeout=20",
          "-o", "ServerAliveInterval=30",
-         "-T", "-x"] + extra
+         tty ? "-t" : "-T", "-x"] + extra
     }
 
     static var environment: [String: String] {

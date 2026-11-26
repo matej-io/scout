@@ -130,6 +130,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
     private let contentSplit = TerminalSplitController()
     private var terminalPanel: TerminalPanelController?
     private var terminalSessions: [TerminalPanelController] = []
+    private var lastTerminalByHost: [String?: TerminalPanelController] = [:]
     private var terminalVisible: Bool { contentSplit.isTerminalVisible }
     private(set) var activePane: PaneViewController!
     var panes: [PaneViewController] { container.panes }
@@ -466,65 +467,81 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
             activePane.focus()
             contentSplit.hide()
         } else {
-            if terminalPanel == nil { createTerminal() }
-            guard let panel = terminalPanel else { return }
-            contentSplit.show(panel)
-            panel.setVisible(true)
-            panel.followFolder(activePane.location.ref ?? .local(Location.home))
-            panel.focus()
+            let folder = activePane.location.ref ?? .local(Location.home)
+            if let panel = terminal(for: folder.remoteHost) {
+                showTerminal(panel)
+                panel.followFolder(folder)
+            } else {
+                showTerminal(createTerminal(in: folder))
+            }
         }
     }
 
     @objc func newTerminalHere(_ sender: Any?) {
-        terminalPanel?.setVisible(false)
-        contentSplit.hide()
-        createTerminal()
-        guard let panel = terminalPanel else { return }
+        let folder = activePane.location.ref ?? .local(Location.home)
+        showTerminal(createTerminal(in: folder))
+    }
+
+    private func terminal(for host: String?) -> TerminalPanelController? {
+        lastTerminalByHost[host] ?? terminalSessions.last { $0.remoteHost == host }
+    }
+
+    private func createTerminal(in folder: ItemRef) -> TerminalPanelController {
+        let panel = TerminalPanelController(folder: folder)
+        panel.onHide = { [weak self, weak panel] in
+            guard let self, let panel, self.terminalPanel === panel, self.terminalVisible else { return }
+            self.toggleTerminal(nil)
+        }
+        panel.onNew = { [weak self] in self?.newTerminalHere(nil) }
+        panel.onSelect = { [weak self] index in self?.selectTerminal(index) }
+        panel.onExit = { [weak self, weak panel] in
+            guard let self, let panel else { return }
+            self.removeTerminal(panel)
+        }
+        terminalSessions.append(panel)
+        refreshTerminalSessions()
+        return panel
+    }
+
+    private func removeTerminal(_ panel: TerminalPanelController) {
+        guard let index = terminalSessions.firstIndex(where: { $0 === panel }) else { return }
+        let wasShowing = terminalVisible && terminalPanel === panel
+        if terminalPanel === panel {
+            activePane.focus()
+            contentSplit.hide()
+            terminalPanel = nil
+        }
+        panel.stop()
+        terminalSessions.remove(at: index)
+        if lastTerminalByHost[panel.remoteHost] === panel {
+            lastTerminalByHost[panel.remoteHost] = nil
+        }
+        refreshTerminalSessions()
+        if wasShowing, let next = terminal(for: activePane.location.ref?.remoteHost) ?? terminalSessions.last {
+            showTerminal(next)
+        }
+    }
+
+    private func selectTerminal(_ index: Int) {
+        guard terminalSessions.indices.contains(index) else { return }
+        showTerminal(terminalSessions[index])
+    }
+
+    private func showTerminal(_ panel: TerminalPanelController) {
+        if terminalPanel !== panel { terminalPanel?.setVisible(false) }
+        terminalPanel = panel
+        lastTerminalByHost[panel.remoteHost] = panel
         contentSplit.show(panel)
         panel.setVisible(true)
         panel.focus()
     }
 
-    private func createTerminal() {
-        let panel = TerminalPanelController(folder: activePane.location.ref ?? .local(Location.home))
-        panel.onHide = { [weak self] in self?.toggleTerminal(nil) }
-        panel.onNew = { [weak self] in self?.newTerminalHere(nil) }
-        panel.onSelect = { [weak self] index in self?.selectTerminal(index) }
-        panel.onExit = { [weak self, weak panel] in
-            guard let self, let panel else { return }
-            let wasVisible = self.terminalVisible
-            if self.terminalPanel === panel {
-                self.activePane.focus()
-                self.contentSplit.hide()
-                self.terminalPanel = nil
-            }
-            panel.stop()
-            self.terminalSessions.removeAll { $0 === panel }
-            if self.terminalPanel == nil, !self.terminalSessions.isEmpty {
-                self.terminalPanel = self.terminalSessions.last
-                if wasVisible { self.selectTerminal(self.terminalSessions.count - 1) }
-            }
-            self.refreshTerminalSessions()
-        }
-        terminalSessions.append(panel)
-        terminalPanel = panel
-        refreshTerminalSessions()
-    }
-
-    private func selectTerminal(_ index: Int) {
-        guard terminalSessions.indices.contains(index) else { return }
-        terminalPanel?.setVisible(false)
-        contentSplit.hide()
-        terminalPanel = terminalSessions[index]
-        contentSplit.show(terminalSessions[index])
-        terminalSessions[index].setVisible(true)
-        terminalSessions[index].focus()
-        refreshTerminalSessions()
-    }
-
     private func refreshTerminalSessions() {
+        let titles = terminalSessions.enumerated().map { index, panel in
+            "Terminal \(index + 1) — \(panel.machineName)"
+        }
         for (index, panel) in terminalSessions.enumerated() {
-            panel.updateSessions(count: terminalSessions.count, selected: index)
+            panel.updateSessions(titles: titles, selected: index)
         }
     }
 
@@ -533,6 +550,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
         contentSplit.hide()
         for panel in terminalSessions { panel.stop() }
         terminalSessions.removeAll()
+        lastTerminalByHost.removeAll()
         terminalPanel = nil
     }
 
@@ -1047,6 +1065,44 @@ extension MainWindowController {
                 await pause()
             }
             require(terminalSessions.count == 1 && terminalPanel !== panel, "exited shell is removed")
+            if let destination = ProcessInfo.processInfo.environment["SCOUT_TERMINALTEST_SSH"] {
+                let localPanel = terminalPanel
+                let host = SSHManager.shared.host(destination)
+                let connection = await withCheckedContinuation { continuation in
+                    host.connect { continuation.resume(returning: $0) }
+                }
+                require((try? connection.get()) != nil, "SSH connection: \(connection)")
+                toggleTerminal(nil)
+                activePane.navigate(to: .folder(.remote(host: destination, path: "/.")))
+                toggleTerminal(nil)
+                guard let remotePanel = terminalPanel, remotePanel !== localPanel else {
+                    require(false, "opening an SSH folder creates a remote shell"); return
+                }
+                for _ in 0..<10 {
+                    if remotePanel.currentFolder.path == "/" { break }
+                    await pause()
+                }
+                require(remotePanel.currentFolder.path == "/", "SSH shell starts in the displayed folder")
+                let picker = remotePanel.view.subviews.compactMap { $0 as? NSPopUpButton }.first
+                require(picker?.itemTitles == ["Terminal 1 — This Mac", "Terminal 2 — \(destination)"], "picker identifies the machines")
+                toggleTerminal(nil)
+                activePane.navigate(to: .folder(host.rootRef))
+                toggleTerminal(nil)
+                for _ in 0..<10 {
+                    if remotePanel.currentFolder == host.rootRef { break }
+                    await pause()
+                }
+                require(terminalPanel === remotePanel && terminalSessions.count == 2, "reopening reuses the same SSH shell")
+                require(remotePanel.currentFolder == host.rootRef, "idle SSH shell follows the displayed folder")
+                let close = remotePanel.view.subviews.compactMap { $0 as? NSButton }.first {
+                    $0.identifier?.rawValue == "scout.terminal.close"
+                }
+                require(close != nil, "close session button exists")
+                close?.performClick(nil)
+                require(terminalPanel === localPanel && terminalSessions.count == 1, "close button removes only the selected session")
+                host.disconnect()
+                NSLog("SSH TERMINAL TEST PASSED: start, reuse, folder following, machine labels and close")
+            }
             closeTerminal()
             await pause()
             require(kill(pid, 0) == -1 && errno == ESRCH, "shell terminated on close")
