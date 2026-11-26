@@ -6,8 +6,16 @@ import GhosttyTerminal
 
 final class ScoutWindow: NSWindow {
     var onFirstResponderChange: ((NSResponder?) -> Void)?
+    var remoteTitlePathMenu: (() -> NSMenu?)?
 
     override func sendEvent(_ event: NSEvent) {
+        let modifiedClick = event.type == .leftMouseDown &&
+            (event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control))
+        if (event.type == .rightMouseDown || modifiedClick), representedURL == nil,
+           let titleField = titleField(at: event.locationInWindow), let menu = remoteTitlePathMenu?() {
+            NSMenu.popUpContextMenu(menu, with: event, for: titleField)
+            return
+        }
         if event.type == .leftMouseDown || event.type == .rightMouseDown || event.type == .otherMouseDown,
            let contentView,
            // The content runs under the toolbar (full-size content view), so a click on Back, Search and
@@ -26,6 +34,19 @@ final class ScoutWindow: NSWindow {
             }
         }
         super.sendEvent(event)
+    }
+
+    private func titleField(at point: NSPoint) -> NSTextField? {
+        // The full-size content view extends behind the toolbar. Check the window frame's hit
+        // view for the title so toolbar buttons and the area beside the label keep their clicks.
+        guard titleVisibility == .visible, !contentLayoutRect.contains(point),
+              let frameView = contentView?.superview else { return nil }
+        var hit = frameView.hitTest(point)
+        while let view = hit {
+            if let field = view as? NSTextField, field.stringValue == title, !field.isEditable { return field }
+            hit = view.superview
+        }
+        return nil
     }
 
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
@@ -181,6 +202,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
         window.setContentSize(NSSize(width: 1000, height: 600))
         window.onFirstResponderChange = { [weak self] responder in self?.firstResponderChanged(responder) }
+        window.remoteTitlePathMenu = { [weak self] in self?.makeRemoteTitlePathMenu() }
         updateWindowChrome()
         NotificationCenter.default.addObserver(self, selector: #selector(updateAvailabilityChanged), name: Updater.availabilityChanged, object: nil)
         updateAvailabilityChanged()
@@ -846,6 +868,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSMenuIt
 
     func windowDidBecomeKey(_ notification: Notification) {
         sidebar.syncSelection()
+    }
+
+    private func makeRemoteTitlePathMenu() -> NSMenu? {
+        guard let location = activePane?.location, location.isRemote else { return nil }
+        let menu = NSMenu()
+        var current: Location? = location
+        while let destination = current {
+            let item = NSMenuItem(title: destination.title, action: #selector(goToPathMenuLocation(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = destination
+            if let ref = destination.ref {
+                let icon = ref.path.isEmpty || ref.path == "/" ? NetworkBrowser.serverIcon : NSImage(named: NSImage.folderName)
+                item.image = icon?.copy() as? NSImage
+            } else {
+                item.image = NSImage(named: NSImage.networkName)?.copy() as? NSImage
+            }
+            item.image?.size = NSSize(width: 16, height: 16)
+            menu.addItem(item)
+            current = destination.parent
+        }
+        return menu
     }
 
     /// The title’s path menu (⌘-click or right-click) opens folders in Finder by default;
