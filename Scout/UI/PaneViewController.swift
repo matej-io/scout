@@ -1058,10 +1058,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     }
 
     @objc func copyPathname(_ sender: Any?) {
-        let paths = selectedItems.map { item -> String in
-            if case .remote(let host, let path) = item.ref { return "\(host):\(path)" }
-            return item.ref.path
-        }
+        let paths = selectedItems.map(\.ref.path)
         guard !paths.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
@@ -1259,6 +1256,7 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
         menu.addItem(withTitle: "Move to \(Prefs.trashTitle)", action: #selector(moveToTrash(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Get Info", action: #selector(getInfo(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Copy Path", action: #selector(copyPathname(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "Rename", action: #selector(renameSelection(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "Compress", action: #selector(compressItems(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "Duplicate", action: #selector(duplicateItems(_:)), keyEquivalent: "")
@@ -1276,21 +1274,24 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
             let share = NSMenuItem(title: "Share…", action: #selector(MainWindowController.shareSelection(_:)), keyEquivalent: "")
             menu.addItem(share)
         }
-        menu.addItem(.separator())
         if !selection.contains(where: { $0.ref.isRemote }) {
+            menu.addItem(.separator())
             let tags = NSMenuItem()
             tags.view = TagMenuView(selection: selection) { [weak self] tag in
                 self?.setTag(tag, on: selection)
                 menu.cancelTracking()
             }
             menu.addItem(tags)
+        }
+        let canShowInEnclosingFolder = searchQuery != nil || location.ref == nil
+        let canOpenInTerminal = selection.contains(where: \.isBrowsable) || location.isRemote
+        if canShowInEnclosingFolder || canOpenInTerminal {
             menu.addItem(.separator())
         }
-        if searchQuery != nil || location.ref == nil {
+        if canShowInEnclosingFolder {
             menu.addItem(withTitle: "Show in Enclosing Folder", action: #selector(showInEnclosingFolder(_:)), keyEquivalent: "")
         }
-        menu.addItem(withTitle: "Copy as Pathname", action: #selector(copyPathname(_:)), keyEquivalent: "")
-        if selection.contains(where: \.isBrowsable) || location.isRemote {
+        if canOpenInTerminal {
             menu.addItem(withTitle: "Open in Terminal", action: #selector(openInTerminal(_:)), keyEquivalent: "")
         }
         return menu

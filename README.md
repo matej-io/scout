@@ -15,7 +15,7 @@ A native macOS clone of Finder, built with AppKit, that adds two things Finder d
 - Rename (Return), New Folder (⇧⌘N), Duplicate (⌘D), Make Alias, Compress, Move to Bin (⌘⌫) with undo
 - Copy/paste files (⌘C / ⌘V / ⌥⌘V to move), and drag and drop between panes, windows and other apps
 - Copies and moves that take longer than a second show a progress window with the amount done, the time left and a stop button. A stopped copy doesn't leave a partial item behind
-- Quick Look (Space), Get Info (⌘I), Open With, Share, Tags, Copy as Pathname, Open in Terminal
+- Quick Look (Space), Get Info (⌘I), Open With, Share, Tags, Copy Path, Open in Terminal
 - Tabs (⌘T), path bar (⌥⌘P), status bar (⌘/), hidden files (⇧⌘.)
 - iCloud Drive status next to names, as in Finder: a cloud for items only in iCloud (click it to download), waiting to upload, out of space and can't-upload badges, and a pie that fills as a download or upload goes. **Download Now** and **Remove Download** are in the context menu, and opening an item that's only in iCloud downloads it. The same works for other cloud folders (Dropbox, OneDrive and so on) in `~/Library/CloudStorage`
 - Light and dark mode, using the system's own controls and Finder's symbols

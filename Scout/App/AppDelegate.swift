@@ -287,7 +287,7 @@ enum MainMenu {
         let move = item("Move Items Here", #selector(PaneViewController.moveItemsHere(_:)), "v", [.command, .option])
         move.isAlternate = true
         menu.addItem(move)
-        menu.addItem(item("Copy as Pathname", #selector(PaneViewController.copyPathname(_:)), "c", [.command, .option]))
+        menu.addItem(item("Copy Path", #selector(PaneViewController.copyPathname(_:)), "c", [.command, .option]))
         menu.addItem(item("Select All", #selector(NSResponder.selectAll(_:)), "a"))
         return menu
     }
