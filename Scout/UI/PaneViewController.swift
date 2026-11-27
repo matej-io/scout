@@ -1060,8 +1060,17 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
     @objc func copyPathname(_ sender: Any?) {
         let paths = selectedItems.map(\.ref.path)
         guard !paths.isEmpty else { return }
+        copyPathText(paths.joined(separator: "\n"))
+    }
+
+    @objc private func copyFolderPath(_ sender: Any?) {
+        guard let path = location.ref?.path else { return }
+        copyPathText(path)
+    }
+
+    private func copyPathText(_ text: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     @objc func showInEnclosingFolder(_ sender: Any?) {
@@ -1304,6 +1313,10 @@ final class PaneViewController: NSViewController, NSMenuDelegate {
             menu.addItem(.separator())
         }
         menu.addItem(withTitle: "Get Info", action: #selector(getInfo(_:)), keyEquivalent: "")
+        if location.ref != nil {
+            let copyPath = menu.addItem(withTitle: "Copy Path", action: #selector(copyFolderPath(_:)), keyEquivalent: "")
+            copyPath.target = self
+        }
         if location.isWritableFolder {
             menu.addItem(.separator())
             menu.addItem(withTitle: "Paste Item", action: #selector(paste(_:)), keyEquivalent: "")
